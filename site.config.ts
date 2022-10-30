@@ -46,7 +46,7 @@ export default siteConfig({
      '/Bury-Me-Behind-the-Baseboard-en': 'Bury-Me-Behind-the-Baseboard-c6f2c93cbb534a19ba38b81226aa795b',
      '/The-Ape-Star': 'b5811360180c43efac06a8b18fe89100',
      '/The-Ape-Star-en': 'The-Ape-Star-91807219acdd460391f245c5791a8323'
-   }
+   },
   // pageUrlOverrides: null,
 
   // whether to use the default notion navigation style or a custom one with links to
