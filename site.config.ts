@@ -42,12 +42,10 @@ export default siteConfig({
   // example:
   //
   pageUrlOverrides: {
-      '/Bury-Me-Behind-the-Baseboard': 'ee2d7bea11484e16bcb03effc276a719',
-      '/Bury-Me-Behind-the-Baseboard-en': 'Bury-Me-Behind-the-Baseboard-c6f2c93cbb534a19ba38b81226aa795b',
-      '/The-Ape-Star': 'b5811360180c43efac06a8b18fe89100',
-      '/The-Ape-Star-en': 'The-Ape-Star-91807219acdd460391f245c5791a8323',
-       
-  //   '/The-Ape-Star': 'b5811360180c43efac06a8b18fe89100'
+     '/Bury-Me-Behind-the-Baseboard': 'ee2d7bea11484e16bcb03effc276a719',
+     '/Bury-Me-Behind-the-Baseboard-en': 'Bury-Me-Behind-the-Baseboard-c6f2c93cbb534a19ba38b81226aa795b',
+     '/The-Ape-Star': 'b5811360180c43efac06a8b18fe89100',
+     '/The-Ape-Star-en': 'The-Ape-Star-91807219acdd460391f245c5791a8323'
    }
   // pageUrlOverrides: null,
 
