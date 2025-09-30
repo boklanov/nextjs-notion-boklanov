@@ -1,9 +1,22 @@
-import { config } from '@fisch0920/config/eslint'
+import eslint from '@eslint/js'
+import tseslint from 'typescript-eslint'
 
 export default [
-  ...config,
   {
-    files: ['**/*.ts', '**/*.tsx'],
+    ignores: [
+      '**/node_modules/**',
+      '**/.next/**',
+      '**/.vercel/**',
+      '**/build/**',
+      '**/dist/**',
+      '**/.cache/**',
+      '**/public/**'
+    ]
+  },
+  eslint.configs.recommended,
+  ...tseslint.configs.recommended,
+  {
+    files: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
     rules: {
       'react/prop-types': 'off',
       'unicorn/no-array-reduce': 'off',
@@ -16,7 +29,13 @@ export default [
       'jsx-a11y/media-has-caption': 'off',
       'jsx-a11y/interactive-supports-focus': 'off',
       'jsx-a11y/anchor-is-valid': 'off',
-      '@typescript-eslint/naming-convention': 'off'
+      '@typescript-eslint/naming-convention': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { 
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_' 
+      }],
+      '@typescript-eslint/no-explicit-any': 'warn',
+      'no-console': 'off'
     }
   }
 ]
