@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url'
 import bundleAnalyzer from '@next/bundle-analyzer'
 
 const withBundleAnalyzer = bundleAnalyzer({
-  // eslint-disable-next-line no-process-env
   enabled: process.env.ANALYZE === 'true'
 })
 
@@ -12,7 +11,7 @@ export default withBundleAnalyzer({
   eslint: {
     // Warning: This allows production builds to successfully complete even if
     // your project has ESLint errors.
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: true
   },
   staticPageGenerationTimeout: 300,
   images: {

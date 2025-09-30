@@ -14,7 +14,8 @@ export default siteConfig({
   author: 'Roman Boklanov',
 
   // open graph metadata (optional)
-  description: 'Портфолио режиссерских и актёрских работ Романа Бокланова, личный сайт',
+  description:
+    'Портфолио режиссерских и актёрских работ Романа Бокланова, личный сайт',
 
   // social usernames (optional)
   // instagram: 'boklanovroman',
