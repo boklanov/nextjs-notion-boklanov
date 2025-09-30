@@ -15,7 +15,7 @@ export default siteConfig({
 
   // open graph metadata (optional)
   description: 'Портфолио режиссерских и актёрских работ Романа Бокланова, личный сайт',
-  
+
   // social usernames (optional)
   // instagram: 'boklanovroman',
   // facebook: '100001713857792',
@@ -49,7 +49,7 @@ export default siteConfig({
   //    '/Jagger-Jagger': '20a595cc8c4843d7b4281e4b56fc6ff4',
   //    '/Jagger-Jagger-en': '616c45a046534a0e8e47c6b4a45a4f26',
   //    '/Nikita-looking-for-the-sea': 'd42689bd05c2410db6c679d1b575088e',
-  //    '/Nikita-looking-for-the-sea-en': '310ad30a540f4ab282a55f5308f63303',    
+  //    '/Nikita-looking-for-the-sea-en': '310ad30a540f4ab282a55f5308f63303',
   //    '/Aiaccio': 'e3a5503b611f4e0db3973d489b2b010a',
   //    '/Aiaccio-en': '6f9f7b00c42d4c9d961ac0a5454b1240',
   //    '/Plaster': 'd9a81d6aa35f42ebacfc04d68b7c6141',
@@ -74,20 +74,20 @@ export default siteConfig({
   //    '/Online-en': '8e330830dea1460d818186215b135472',
   //    '/Second-director': '76daa9bde2e3499e974fd37a51d47344'
   //  },
-   pageUrlOverrides: null,
+  pageUrlOverrides: null,
 
   // whether to use the default notion navigation style or a custom one with links to
-  // important pages
+  // important pages. To use `navigationLinks`, set `navigationStyle` to `custom`.
   // navigationStyle: 'default'
-   navigationStyle: 'custom',
-   navigationLinks: [
-     {
-       title: 'English',
-       pageId: 'a5b04e92d3184bc384d04deb62feb515'
-     },
-     {
-       title: 'Контакты',
-       pageId: '3abd61d5916847ebacc99919f6834a7b'
-     }
-   ]
+  navigationStyle: 'custom',
+  navigationLinks: [
+    {
+      title: 'English',
+      pageId: 'a5b04e92d3184bc384d04deb62feb515'
+    },
+    {
+      title: 'Контакты',
+      pageId: '3abd61d5916847ebacc99919f6834a7b'
+    }
+  ]
 })
