@@ -3,18 +3,27 @@ import { NotionPage } from '@/components/NotionPage'
 import { domain } from '@/lib/config'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 
+// Hobby plan caps serverless functions at 10s by default; raise to 60s.
+export const config = {
+  maxDuration: 60
+}
+
 export const getStaticProps = async () => {
   try {
     const props = await resolveNotionPage(domain)
 
-    return { props, revalidate: 10 }
+    return { props, revalidate: 60 }
   } catch (err) {
     console.error('page error', domain, err)
 
-    // Soft-fail: matches pages/[pageId].tsx. Notion 429s during build
-    // shouldn't kill the whole deploy. ISR rebuilds the page on first
-    // request when the rate-limit window clears.
-    return { notFound: true, revalidate: 30 }
+    // Build phase: soft-fail. fallback: true means home hydrates on first
+    // request when Notion responds.
+    if (process.env.NEXT_PHASE === 'phase-production-build') {
+      return { notFound: true, revalidate: 60 }
+    }
+
+    // Runtime ISR: throw to keep serving the last-known-good snapshot.
+    throw err
   }
 }
 
