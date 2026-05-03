@@ -1,69 +1,41 @@
-import { createHash } from 'node:crypto'
-
-import {
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client
-} from '@aws-sdk/client-s3'
+/**
+ * Cache layer for preview images and URI→pageId mappings.
+ *
+ * Strategy: when R2 is configured (via R2_* env vars), persist values to
+ * R2 as JSON. Otherwise fall back to in-memory Keyv (or Redis-backed Keyv
+ * if isRedisEnabled). The public interface is the same in all modes:
+ *
+ *   db.get(key) → value | undefined
+ *   db.set(key, value) → Promise<void>
+ */
 import Keyv from '@keyvhq/core'
 import KeyvRedis from '@keyvhq/redis'
 
-import {
-  isR2Enabled,
-  isRedisEnabled,
-  r2AccessKeyId,
-  r2AccountId,
-  r2Bucket,
-  r2PreviewPrefix,
-  r2SecretAccessKey,
-  redisNamespace,
-  redisUrl
-} from './config'
+import { isRedisEnabled, redisNamespace, redisUrl } from './config'
+import { getR2Bytes, isR2Enabled, putR2Bytes, r2Key } from './r2'
 
 interface Cache {
   get: (key: string) => Promise<any>
   set: (key: string, value: any) => Promise<void>
 }
 
-// Hash keys so URLs with query strings / special chars produce safe S3 keys.
-function r2Key(key: string): string {
-  return `${r2PreviewPrefix}${createHash('sha256').update(key).digest('hex')}.json`
-}
+const PREVIEW_PREFIX = process.env.R2_PREVIEW_PREFIX ?? 'cache/preview/'
 
 function createR2Cache(): Cache {
-  const client = new S3Client({
-    region: 'auto',
-    endpoint: `https://${r2AccountId}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId: r2AccessKeyId!,
-      secretAccessKey: r2SecretAccessKey!
-    }
-  })
-
   return {
     async get(key) {
-      try {
-        const res = await client.send(
-          new GetObjectCommand({ Bucket: r2Bucket!, Key: r2Key(key) })
-        )
-        const body = await res.Body?.transformToString()
-        return body ? JSON.parse(body) : undefined
-      } catch (err: any) {
-        // NoSuchKey is the cache-miss path — silent.
-        if (err?.name === 'NoSuchKey' || err?.$metadata?.httpStatusCode === 404)
-          return undefined
-        throw err
-      }
+      const bytes = await getR2Bytes(r2Key(PREVIEW_PREFIX, key, 'json'))
+      if (!bytes) return undefined
+      // R2 binary → utf-8 JSON.
+      return JSON.parse(new TextDecoder().decode(bytes))
     },
 
     async set(key, value) {
-      await client.send(
-        new PutObjectCommand({
-          Bucket: r2Bucket!,
-          Key: r2Key(key),
-          Body: JSON.stringify(value),
-          ContentType: 'application/json'
-        })
+      const body = new TextEncoder().encode(JSON.stringify(value))
+      await putR2Bytes(
+        r2Key(PREVIEW_PREFIX, key, 'json'),
+        body,
+        'application/json'
       )
     }
   }
