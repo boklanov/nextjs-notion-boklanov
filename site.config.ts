@@ -31,7 +31,10 @@ export default siteConfig({
   defaultPageCoverPosition: 0.5,
 
   // whether or not to enable support for LQIP preview images (optional)
-  isPreviewImageSupportEnabled: false,
+  // Backed by R2 when R2_* env vars are set (see lib/db.ts); falls back to
+  // in-memory cache otherwise. Safe to enable regardless — first build
+  // generates LQIPs, subsequent builds read from cache.
+  isPreviewImageSupportEnabled: true,
 
   // whether or not redis is enabled for caching generated preview images (optional)
   // NOTE: if you enable redis, you need to set the `REDIS_HOST` and `REDIS_PASSWORD`
