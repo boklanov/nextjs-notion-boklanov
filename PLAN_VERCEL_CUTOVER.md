@@ -4,35 +4,23 @@ Repo: `boklanov/nextjs-notion-boklanov` · Owner: Daniil
 
 ---
 
-## 🚨 Current state — SITE IS DOWN
+## 🚨 Current state — SITE STILL DOWN
 
 Production at `boklanov.com` returns **404 "Notion Page Not Found"** on most slugs.
-Every PR (#2 → #5) merged. Every deploy green. Build succeeds. Runtime breaks.
+PRs #2 → #6 all merged. Build succeeds. 60s function timeout in place. Still broken.
 
-### Latest production log pattern (2026-05-03 19:44 UTC)
+### Why timeouts alone don't fix it
 
-```
-GET 404 /                           ← intermittent
-GET 200 /                           ← sometimes works
-GET 404 /roman-boklanov-english     ← Vercel Runtime Timeout 10s
-GET 404 /Online                     ← Notion 429 Too Many Requests
-GET 404 /The-Ape-Star
-GET 404 /Bury-Me-Behind-the-Baseboard
-```
+PR #6 raised the Vercel function cap to 60s (Hobby plan max). That's enough time
+for most successful Notion responses. **But it does not solve Notion 429s.**
 
-### Root cause
+Sequence on first visit to a slug after deploy:
+1. Build skipped this slug because it 429'd → no static HTML cached.
+2. First visitor triggers `getStaticProps` → Notion returns 429.
+3. Our runtime catch throws → no last-known-good snapshot exists → renders as 404.
+4. ISR retries every 60s but Notion keeps 429-ing → 404 stays.
 
-PR #5 said "throw on runtime ISR error → Next preserves last-known-good snapshot."
-Two reasons it doesn't help in practice:
-
-1. **`vercel.json` `functions` block was never deployed** — the merge of PR #5
-   captured only the first commit (`058db45`), missing the follow-up commit
-   `6677291` that added `vercel.json`. Production has zero `maxDuration`
-   override — still on legacy 10s cap. **Fix: PR #6 (open).**
-2. **Even after the timeout fix, Notion 429s on first-visit slugs return error**
-   → no "last good snapshot" exists yet → renders as 404. The real fix is to
-   serve build-time recordMaps from R2 when Notion is rate-limited at runtime.
-   **Fix: Option A below.**
+The site has **no fallback data path**. Every render attempts a fresh Notion call.
 
 ---
 
@@ -43,7 +31,8 @@ Two reasons it doesn't help in practice:
 | #2 | `8d76639` | Upstream sync (Feb 2026), Vercel build green, R2 host in `next.config.js` |
 | #3 | `3d58cdf` | R2-backed preview-image LQIP cache (`lib/db.ts` + `lib/r2.ts`) |
 | #4 | `fa50a22` | R2 cache for `/api/social-image` OG cards |
-| #5 | `9698954` | Throw on runtime ISR error (only — vercel.json missed the merge window) |
+| #5 | `9698954` | Throw on runtime ISR error (revalidate 60, soft-fail at build only) |
+| #6 | `4948a81` | `vercel.json` `functions` block with `maxDuration: 60` |
 
 ### Vercel env vars (all set)
 
@@ -51,83 +40,80 @@ Two reasons it doesn't help in practice:
 - `NEXT_PUBLIC_CDN_BASE` = `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev`
 - `ENABLE_EXPERIMENTAL_COREPACK=1`
 
+### Vercel plan
+
+Hobby. `maxDuration` capped at 60s. Pro raises this to 300s but that's not on the table.
+
 ---
 
-## 🔧 What needs to ship next
+## 🔧 The only thing that will fix the site — Option A
 
-### PR #6 — vercel.json + maxDuration 60 (OPEN, immediate)
+### R2 recordMap cache (~½ day, single PR)
 
-The PR #5 follow-up that missed the merge. Adds:
+Cache full Notion recordMaps to R2 keyed by pageId. On every successful
+`notion.getPage`, write the recordMap to R2. On Notion 429/timeout/error during
+ISR regeneration, **fall back to the R2 snapshot** (even if old).
 
-```json
-{
-  "functions": {
-    "pages/index.tsx":            { "maxDuration": 60 },
-    "pages/[pageId].tsx":         { "maxDuration": 60 },
-    "pages/api/social-image.tsx": { "maxDuration": 60 }
-  }
-}
-```
-
-60s is the current Hobby plan cap (300 was rejected with
-`The value for maxDuration must be between 1 second and 60 seconds, in order to increase this limit upgrade your plan`).
-Without this, Vercel kills the function at the legacy 10s default — no time for
-Notion's `loadPageChunk` on the heavy home page.
-
-### Option A — R2 recordMap cache (RECOMMENDED, ~½ day)
-
-Cache full Notion recordMaps to R2 keyed by pageId. Build-time successes write to R2.
-Runtime ISR reads R2 first; only hits Notion if cache is stale; on Notion 429, falls
-through to the R2 snapshot.
-
-Result: Notion 429s become invisible to visitors. First visit to any slug serves
-R2-cached HTML in <500ms instead of timing out → 404.
+Result: Notion 429s become invisible to visitors. After the first deploy that
+populates R2, the site stays up regardless of Notion's mood — every page has a
+fallback.
 
 **Implementation sketch:**
 - New `lib/notion-recordmap-cache.ts` using existing `lib/r2.ts` helpers
-- Wrap `notion.getPage(pageId)` in `lib/notion.ts`:
-  - Try Notion → success: write to R2, return result
-  - Notion fails (429/timeout): read R2 → if hit, return cached recordMap; else throw
+  (`getR2Bytes`, `putR2Bytes`, `r2Key` already shipped in PR #4).
+- Modify `lib/notion.ts` `getPage`:
+  ```ts
+  try {
+    const recordMap = await notion.getPage(pageId, { ofetchOptions: ROBUST })
+    putR2Bytes(r2Key('cache/recordmap/', pageId, 'json'),
+               new TextEncoder().encode(JSON.stringify(recordMap)),
+               'application/json').catch(() => {}) // fire-and-forget
+    return recordMap
+  } catch (err) {
+    const cached = await getR2Bytes(r2Key('cache/recordmap/', pageId, 'json'))
+    if (cached) {
+      console.warn('notion getPage failed, serving R2 cache for', pageId)
+      return JSON.parse(new TextDecoder().decode(cached))
+    }
+    throw err
+  }
+  ```
 - Cache key: `cache/recordmap/{sha256(pageId)}.json`
-- TTL: none (overwritten on next successful Notion fetch)
+- TTL: none — overwritten on next successful Notion fetch.
+- Same pattern as the OG cache (PR #4); reuses the R2 client already in `lib/r2.ts`.
 
-Same pattern as the OG cache (PR #4), just for the page payload.
-
-### Option B — Notion API key (~10 min, partial fix)
-
-Set `NOTION_API_KEY` env var; pass to `notion-client` in `lib/notion-api.ts`.
-Authenticated requests have higher rate limits. Trade-off: `react-notion-x` uses
-Notion's *unofficial* API surface, so the official key may not apply — needs verification.
-
-### Option C — Pre-warm cache after each deploy (~1 hour, additive)
-
-Vercel Cron hits `/`, `/English`, `/Контакты`, plus the production slugs immediately
-after each deploy so first real visitors don't trigger cold ISR. Best paired with Option A.
+**Edge cases to handle:**
+- Cold deploy on a fresh R2 bucket prefix → first build still has to hit Notion
+  successfully at least once per slug. The build-phase soft-fail (skip rate-limited
+  pages from `getStaticPaths`) means uncached slugs may still 404 on first deploy.
+- `recordMap` JSON for the home page is ~1 MB — fits comfortably in R2 PUT, but
+  watch S3 cost / latency at scale.
 
 ---
 
-## 🎯 Recommended path
+## 🥈 Optional, lower-priority
 
-1. **Merge PR #6** to land `vercel.json` (kills the 10s timeout). Site partially recovers
-   for slugs that were prerendered at build.
-2. **Ship Option A** (R2 recordMap cache). Site fully recovers — Notion 429s become
-   invisible. Independent of B/C.
-3. Optional: Option B if Notion auth turns out to apply.
-4. Optional: Option C for sub-second first-visit latency.
+- **Notion API key** (`NOTION_API_KEY` env var) — higher rate limit. Trade-off:
+  `react-notion-x` uses Notion's *unofficial* API surface; the official integration
+  token may not apply. Verify before relying on it.
+- **Vercel Cron cache-warming** post-deploy — hits `/`, `/English`, `/Контакты`, plus
+  top slugs to prebuild ISR pages. Best paired with Option A; doesn't solve anything
+  on its own.
 
 ---
 
-## 📂 Reference — files touched / configured
+## 📂 Reference — files / config
 
 - `lib/notion.ts` — Notion API wrapper, ofetch retry config (where Option A goes)
 - `lib/r2.ts` — shared R2 client + binary helpers (`getR2Bytes`, `putR2Bytes`, `r2Key`)
-- `lib/db.ts` — preview-image cache (PR #3, on R2)
-- `pages/api/social-image.tsx` — OG endpoint with R2 cache (PR #4)
-- `pages/index.tsx`, `pages/[pageId].tsx` — phase-aware error handling, `revalidate: 60`
-- `vercel.json` — `functions` block sets `maxDuration: 60` for SSG pages (PR #6)
+- `lib/db.ts` — preview-image cache layer (PR #3, on R2)
+- `pages/api/social-image.tsx` — OG endpoint with R2 cache (PR #4 reference impl)
+- `pages/index.tsx`, `pages/[pageId].tsx` — phase-aware error handling, `revalidate: 60`,
+  `export const config = { maxDuration: 60 }`
+- `vercel.json` — `functions` block: `maxDuration: 60` for SSG pages
 - `next.config.js` — R2 host in `images.remotePatterns`
 - `site.config.ts` — `isPreviewImageSupportEnabled: true`
-- `.github/workflows/build.yml` — CI runs lint + prettier only (no `pnpm build`)
+- `.github/workflows/build.yml` — CI runs lint + prettier only
 
 ---
 
@@ -135,4 +121,6 @@ after each deploy so first real visitors don't trigger cold ISR. Best paired wit
 
 - Multi-lockfile warning (`/home/octrow/pnpm-lock.yaml`) — cosmetic
 - Home page recordMap is 1.08 MB (Next warns >128 KB) — content/Notion-page work
-- Local `main` ↔ `update-main` branch hygiene — cleanup after Option A lands
+- Local `main` ↔ `update-main` branch hygiene — cleanup after Option A
+- Pro plan upgrade for 300s `maxDuration` — would help but not necessary; 60s is enough
+  *if* Option A absorbs Notion 429s
