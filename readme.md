@@ -10,6 +10,17 @@
 
 [![Build Status](https://github.com/transitive-bullshit/nextjs-notion-starter-kit/actions/workflows/build.yml/badge.svg)](https://github.com/transitive-bullshit/nextjs-notion-starter-kit/actions/workflows/build.yml) [![Prettier Code Formatting](https://img.shields.io/badge/code_style-prettier-brightgreen.svg)](https://prettier.io)
 
+---
+
+> **This is the [boklanov.com](https://boklanov.com) fork.** Most of the README below is the upstream
+> documentation from `transitive-bullshit/nextjs-notion-starter-kit`. Production
+> deployment notes specific to this fork — Notion 429 mitigation, R2
+> recordMap cache, GitHub Actions auto-warmer, post-mortem of the 13-round
+> outage we worked through — live in [`PLAN_VERCEL_CUTOVER.md`](./PLAN_VERCEL_CUTOVER.md).
+> Read that first if you're debugging a deploy.
+
+---
+
 - [Intro](#intro)
 - [Features](#features)
 - [Demos](#demos)
@@ -88,6 +99,48 @@ From your Vercel project settings, you'll want to **disable Vercel Authenticatio
 ![How to disable Vercel Deployment Protection setting](https://github.com/user-attachments/assets/a1eb5a1f-da7a-497e-b4f6-f7e851a6cd8a 'How to disable Vercel Deployment Protection setting which causes social media preview image endpoint to return 401 Unauthorized')
 
 💡 If you forget to do this your site will return `401 Unauthorized` responses when crawlers are trying to retrieve the images.
+
+## Production fork notes (boklanov.com) <!-- omit from toc -->
+
+This fork ships a few additions on top of the upstream kit, all motivated by
+Notion's progressively-tighter rate-limiting on `loadPageChunk` from
+cloud-provider egress IPs (see [react-notion-x #649](https://github.com/NotionX/react-notion-x/issues/649)):
+
+- **Cookie auth** — `lib/notion-api.ts` reads `NOTION_TOKEN_V2` and
+  `NOTION_ACTIVE_USER` and passes them to `notion-client`, raising the
+  rate-limit ceiling. Both env vars are optional but strongly recommended
+  on Vercel.
+- **R2 recordMap cache** — `lib/notion.ts` writes every successfully-fetched
+  recordMap to Cloudflare R2 and falls back to the snapshot on Notion 429s,
+  so visitors never see "Notion Page Not Found" when Notion throttles a
+  runtime ISR regen.
+- **R2 OG card / preview-image caches** — `lib/db.ts` and
+  `pages/api/social-image.tsx` persist their caches to R2 too, so
+  cross-deploy state is preserved.
+- **Auto-warmer** — `.github/workflows/warm-recordmap-cache.yml` walks the
+  whole space from `rootNotionPageId` and populates R2 daily and on
+  push to `main`. Non-blocking on failure.
+
+Required env vars (Vercel + the GitHub Actions secrets, same values):
+
+```
+R2_ACCOUNT_ID
+R2_BUCKET                # e.g. boklanov-content
+R2_ACCESS_KEY_ID
+R2_SECRET_ACCESS_KEY     # paste WITHOUT trailing newline (.trim() guards anyway)
+NEXT_PUBLIC_CDN_BASE     # public r2.dev URL of the bucket
+NOTION_TOKEN_V2          # token_v2 cookie from notion.so
+NOTION_ACTIVE_USER       # notion_user_id cookie from notion.so
+```
+
+Manual cache warm (when the GitHub Action is throttled or you need to
+bootstrap from a residential IP):
+
+```bash
+node --env-file=.env scripts/warm-recordmap-cache.mjs --all
+```
+
+Full background: [PLAN_VERCEL_CUTOVER.md](./PLAN_VERCEL_CUTOVER.md).
 
 ## URL Paths
 
