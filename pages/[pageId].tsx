@@ -6,8 +6,9 @@ import { getSiteMap } from '@/lib/get-site-map'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 import { type PageProps, type Params } from '@/lib/types'
 
-// Hobby plan caps serverless functions at 10s by default; raise to 60s
-// (Hobby max) so Notion's loadPageChunk has time on heavy pages.
+// `vercel.json` `functions` block is what actually sets maxDuration for
+// SSG pages on Pages Router (per Vercel docs); this export is a hint —
+// it only takes effect for API routes. 60s is the Hobby plan cap.
 export const config = {
   maxDuration: 60
 }
