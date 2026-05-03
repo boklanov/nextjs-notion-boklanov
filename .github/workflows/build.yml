@@ -23,7 +23,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: "pnpm"
 
-      - run: pnpm install --frozen-lockfile --strict-peer-dependencies
+      - run: pnpm install --frozen-lockfile
       - run: pnpm test
         # TODO Enable those lines below if you use a Redis cache, you'll also need to configure GitHub Repository Secrets
         env:
