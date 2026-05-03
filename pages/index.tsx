@@ -3,9 +3,9 @@ import { NotionPage } from '@/components/NotionPage'
 import { domain } from '@/lib/config'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 
-// Hobby plan caps serverless functions at 10s by default; raise to 60s.
+// `vercel.json` `functions` block actually sets this for SSG pages.
 export const config = {
-  maxDuration: 60
+  maxDuration: 300
 }
 
 export const getStaticProps = async () => {
