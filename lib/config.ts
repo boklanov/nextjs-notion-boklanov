@@ -132,6 +132,24 @@ export const redisNamespace = getEnv('REDIS_NAMESPACE', 'preview-images')
 
 // ----------------------------------------------------------------------------
 
+// Optional Cloudflare R2 cache for preview images. When all four R2_ vars
+// are set, db.ts uses R2 instead of Redis / in-memory. R2 has zero egress,
+// the cache survives across deploys, and keys are immutable (LQIPs are pure
+// functions of the source image URL).
+export const r2AccountId = getEnv('R2_ACCOUNT_ID', null)
+export const r2Bucket = getEnv('R2_BUCKET', null)
+export const r2AccessKeyId = getEnv('R2_ACCESS_KEY_ID', null)
+export const r2SecretAccessKey = getEnv('R2_SECRET_ACCESS_KEY', null)
+export const isR2Enabled = !!(
+  r2AccountId &&
+  r2Bucket &&
+  r2AccessKeyId &&
+  r2SecretAccessKey
+)
+export const r2PreviewPrefix = getEnv('R2_PREVIEW_PREFIX', 'cache/preview/')
+
+// ----------------------------------------------------------------------------
+
 export const isServer = typeof window === 'undefined'
 
 export const port = getEnv('PORT', '3000')
