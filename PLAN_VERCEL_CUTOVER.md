@@ -8,8 +8,14 @@ Three steps, in order: **(1) sync from upstream** → **(2) fix remaining issues
 
 - `.env` removed from git tracking ✓
 - Vercel env vars added (`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `NEXT_PUBLIC_CDN_BASE`) ✓
-- Local Notion-timeout patches applied to `lib/notion.ts` + `pages/[pageId].tsx` (uncommitted) — may become redundant after step 1; re-evaluate.
-- `pnpm build` currently fails with `TypeError: Cannot read properties of undefined (reading 'replaceAll')` during prerender — almost certainly a React-19 / `react-notion-x` incompatibility that upstream's `feat: update react-notion-x` resolves.
+- **Step 1 DONE** — `sync/upstream-2026-05` branch merged ~20 commits from `upstream/main`. Conflicts in `next.config.js`, `package.json`, `pnpm-lock.yaml` resolved.
+- **Step 2 DONE** — `pnpm build` passes locally on `sync/upstream-2026-05`. Build emits 4/4 static pages, home prerendered, other Notion pages on `fallback:true + ISR`. Required fixes after sync:
+  - `kyOptions` → `ofetchOptions` (notion-client 7.10 migrated to ofetch)
+  - Use ofetch built-in retry (3× with 2s base delay, retry on 408/409/425/429/5xx)
+  - Tolerate missing `recordMap` in `getAllPagesImpl` instead of throwing
+  - Drop `eslint` key from `next.config.js` (Next 16 removed support)
+- **Step 3.1 DONE** — R2 hostname added to `next.config.js images.remotePatterns`.
+- **Pending**: push `sync/upstream-2026-05` → Vercel preview → confirm green → PR to `main`.
 
 ## Step 1 — Sync from upstream `transitive-bullshit/nextjs-notion-starter-kit`
 
