@@ -18,10 +18,12 @@ import {
   S3Client
 } from '@aws-sdk/client-s3'
 
-const accountId = process.env.R2_ACCOUNT_ID
-const bucket = process.env.R2_BUCKET
-const accessKeyId = process.env.R2_ACCESS_KEY_ID
-const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY
+// .trim() guards against trailing whitespace/newlines that can sneak in via
+// the Vercel env-var UI and break HMAC signing in non-obvious ways.
+const accountId = process.env.R2_ACCOUNT_ID?.trim()
+const bucket = process.env.R2_BUCKET?.trim()
+const accessKeyId = process.env.R2_ACCESS_KEY_ID?.trim()
+const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY?.trim()
 
 export const isR2Enabled = !!(
   accountId &&
@@ -43,7 +45,15 @@ function getClient(): S3Client {
       credentials: {
         accessKeyId: accessKeyId!,
         secretAccessKey: secretAccessKey!
-      }
+      },
+      // @aws-sdk/client-s3 ≥3.729 ships flexible checksums by default
+      // (x-amz-checksum-crc32 header on PUT). Cloudflare R2's sigv4
+      // implementation rejects these as `SignatureDoesNotMatch`, so every
+      // PutObject silently fails. Disabling makes R2 happy without affecting
+      // S3 callers.
+      // refs: https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED'
     })
   }
   return client
