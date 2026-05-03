@@ -45,15 +45,7 @@ function getClient(): S3Client {
       credentials: {
         accessKeyId: accessKeyId!,
         secretAccessKey: secretAccessKey!
-      },
-      // @aws-sdk/client-s3 ≥3.729 ships flexible checksums by default
-      // (x-amz-checksum-crc32 header on PUT). Cloudflare R2's sigv4
-      // implementation rejects these as `SignatureDoesNotMatch`, so every
-      // PutObject silently fails. Disabling makes R2 happy without affecting
-      // S3 callers.
-      // refs: https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/
-      requestChecksumCalculation: 'WHEN_REQUIRED',
-      responseChecksumValidation: 'WHEN_REQUIRED'
+      }
     })
   }
   return client
