@@ -1,266 +1,310 @@
-# PLAN — Fix Vercel build for boklanov.com (legacy Notion site)
+# PLAN — Fix Vercel deployment for boklanov.com
 
-Date: 2026-05-03 · Owner: Daniil · Repo: `boklanov/nextjs-notion-boklanov` · Branch: `update-main`
+Repo: `boklanov/nextjs-notion-boklanov` · Owner: Daniil · Started 2026-05-03
 
-Three steps, in order: **(1) sync from upstream** → **(2) fix remaining issues** → **(3) wire R2 for images**.
+The legacy Notion-based site (this fork of `transitive-bullshit/nextjs-notion-starter-kit`)
+had been failing Vercel production builds for 215 days when work began. This document is
+the running log of what was attempted, what worked, what failed, and what's still open.
 
-## State as of 2026-05-03
+---
 
-- `.env` removed from git tracking ✓
-- Vercel env vars added (`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `NEXT_PUBLIC_CDN_BASE`, `ENABLE_EXPERIMENTAL_COREPACK=1`) ✓
-- **Step 1 DONE** — `sync/upstream-2026-05` branch merged ~20 commits from `upstream/main`. Conflicts in `next.config.js`, `package.json`, `pnpm-lock.yaml` resolved. Local boklanov identity preserved.
-- **Step 2 DONE** — `pnpm build` passes both locally and on Vercel. Required fixes after sync:
-  - `kyOptions` → `ofetchOptions` (notion-client 7.10 migrated to ofetch)
-  - Use ofetch built-in retry (3× with 2s base delay, retry on 408/409/425/429/5xx)
-  - Tolerate missing `recordMap` in `getAllPagesImpl` (skip page from static path list, ISR rebuilds)
-  - Soft-fail on `pages/index.tsx` and `pages/[pageId].tsx` (return `notFound + revalidate` instead of throwing)
-  - Drop `eslint` key from `next.config.js` (Next 16 removed support)
-  - `pages/api/social-image.tsx`: drop `runtime = 'edge'` (1 MB Hobby plan cap; Node runtime is fine)
-  - CI: drop `pnpm build` step (GHA shared IPs hit Notion 429 hard); CI does lint + prettier only
-- **Step 3.1 DONE** — R2 hostname added to `next.config.js images.remotePatterns`.
-- **PR #2 MERGED** to `main` as `8d76639` on 2026-05-03 13:56 UTC. Vercel preview `8JFAZ9Qe1YJmnKvpJsQMppaGuY4D` deployed clean in 1m39s. Production deploy from new `main` triggered automatically.
+## Starting state (2026-05-03 morning)
 
-## Known runtime behaviour after deploy
+- Vercel project `boklanovs-projects/nextjs-notion` linked to this repo, production branch
+  `main`, last successful deploy `e058ee9` from 5/15/23.
+- Latest production failure: `TimeoutError POST /api/v3/loadPageChunk` while prerendering
+  `/The-Ape-Star`. Build fully aborted.
+- Local `main` (working tree) was at `53790dd` — many fork-specific commits ahead of
+  `origin/main` but the working branch was `update-main`.
+- Upstream `transitive-bullshit/nextjs-notion-starter-kit` had ~20 unmerged commits
+  including a `react-notion-x` bump that turned out to fix React-19 incompatibility.
+- R2 bucket `boklanov-content` already populated (300 images, 222 MB) but unused by code.
 
-Notion still rate-limits a handful of pages during each Vercel build (429s on `/api/v3/loadPageChunk`). Build absorbs them; affected slugs render via ISR on first request:
-- First visit to a rate-limited slug: ~5–15s wait while `getStaticProps` runs.
-- Subsequent visits: instant from cache (10/30/60s revalidate windows).
-- Visitor hits `/` during the 30s ISR window for the home page: 404 until ISR re-runs.
+---
 
-Mitigations available if 429s become user-visible:
-1. **Notion auth** — set `NOTION_API_KEY` env var, pass to `notion-client` constructor. Lifts rate-limit ceiling significantly.
-2. **Cache warming** — Vercel Cron or scheduled function hitting `/`, `/English`, `/Контакты`, plus the production slugs after each deploy.
-3. **R2 preview-image cache** (Step 3.2) — also reduces inflight Notion requests because LQIPs are no longer regenerated each build.
+## Three-step plan as agreed
 
-## Step 1 — Sync from upstream `transitive-bullshit/nextjs-notion-starter-kit`
+1. **Sync from upstream** `transitive-bullshit/nextjs-notion-starter-kit`
+2. **Fix issues** that surface
+3. **Wire R2 (Cloudflare)** for caching
 
-`git fetch upstream` already done. Gap: ~20 commits including the relevant ones:
+---
+
+## Step 1 — Upstream sync ✅ DONE (PR #2)
+
+Branch `sync/upstream-2026-05` cut from `update-main`, merged `upstream/main` on top.
+
+### What conflicted
+
+- `next.config.js` — kept eslint-ignore + added R2 hostname to `images.remotePatterns`,
+  dropped `bundleAnalyzer` wrapping (upstream removed `analyze` scripts anyway).
+- `package.json` — kept `katex@^0.16.45` (newer than upstream's `^0.16.28`); took upstream
+  versions everywhere else; dropped extra eslint deps that upstream consolidated under
+  `@fisch0920/config`.
+- `pnpm-lock.yaml` — took upstream's, regenerated via `pnpm install`.
+
+### Boklanov-specific identity preserved
+
+`site.config.ts` (`name`, `domain`, `rootNotionPageId`, `description`, `navigationStyle`,
+`navigationLinks` with English/Контакты), public/favicon-*.png, `manifest.json`,
+`GitHubShareButton` removal in `components/NotionPage.tsx`.
+
+### What broke after the merge
+
+- **`Module not found: 'katex/dist/katex.min.css'`** → `pages/_app.tsx:2` imports it;
+  pnpm strict resolution doesn't hoist a transitive peer dep. **Fix:** `pnpm add katex`.
+- **`TypeError: Cannot read properties of undefined (reading 'replaceAll')`** during
+  prerender → notion-utils called with `undefined`, React 19 / outdated `react-notion-x`
+  mismatch. **Fix:** the merge itself (upstream's `0eadf00 feat: update react-notion-x`
+  resolved it).
+- **`Object literal may only specify known properties, and 'kyOptions' does not exist`** →
+  notion-client 7.10 swapped `ky` → `ofetch`. **Fix:** `kyOptions` → `ofetchOptions`
+  everywhere; deleted our hand-rolled retry wrapper since ofetch has built-in
+  `retry`/`retryDelay`/`retryStatusCodes`.
+- **`Notion 429 Too Many Requests` during build** → site-map walker hammered Notion in
+  parallel. **Fix:** added `retryStatusCodes: [408,409,425,429,500,502,503,504]` and
+  changed `getAllPagesImpl` to skip pages whose `recordMap === undefined` instead of
+  throwing. Skipped pages render via `fallback:true + ISR` on first request.
+- **`Next 16 removed `eslint` key in next.config.js`** → dropped it.
+- **`The Edge Function "api/social-image" size is 1.04 MB and your plan size limit is 1 MB`**
+  → Hobby Edge cap is 1 MB; the inter-semibold font alone pushed past it.
+  **Fix:** drop `export const runtime = 'edge'`; falls back to Node runtime which has
+  no such cap. `next/og` `ImageResponse` works in Node since Next 13.3.
+
+### Vercel-specific obstacles
+
+- **`pnpm install` errored `packages field missing or empty`** → Vercel auto-selects pnpm
+  by project age. May 2023 project = pnpm@9, but our `pnpm-workspace.yaml` uses pnpm@10-only
+  fields (`onlyBuiltDependencies`, `minimumReleaseAge`). pnpm@9 errors out.
+  **Tried first:** `installCommand` override in `vercel.json` — community reports it's
+  unreliable, deploy still failed.
+  **Working fix:** Vercel UI env var `ENABLE_EXPERIMENTAL_COREPACK=1`. Combined with
+  `packageManager: pnpm@10.29.3` in `package.json`, Vercel reads packageManager from
+  package.json and downloads pnpm@10.29.3 via corepack. Deploy log confirms:
+  `Detected ENABLE_EXPERIMENTAL_COREPACK=1 and "pnpm@10.29.3" in package.json`.
+- **CI `pnpm install --strict-peer-dependencies` failed** on React 19 vs old transitive
+  deps (react-body-classname, react-side-effect, react-lazy-images all want React ≤18).
+  **Fix:** dropped `--strict-peer-dependencies`. Warnings remain; functionally fine.
+- **CI `eslint.config.js` import broken** → after dropping our extra eslint deps, our
+  custom `eslint.config.js` (from local commit `e3cb7b9`) couldn't resolve `@eslint/js`.
+  **Fix:** took upstream's `eslint.config.js` which uses `@fisch0920/config/eslint`.
+- **CI `pnpm build` step also hit Notion 429** from shared GitHub Actions IPs. Vercel's
+  IPs are less throttled. **Fix:** dropped `pnpm build` from CI workflow entirely. CI
+  does lint + prettier only; Vercel runs the real build.
+
+### Result
+
+PR #2 merged at `8d76639` on 2026-05-03 13:56 UTC. Production at `boklanov.com` deployed
+green for the first time in 215 days.
+
+---
+
+## Step 2 — R2 caching ✅ DONE (PRs #3 + #4)
+
+### PR #3 — preview-image LQIP cache
+
+`lib/db.ts` rewritten so when `R2_*` env vars are set, the cache layer routes through
+Cloudflare R2 (via `@aws-sdk/client-s3`) instead of in-memory Keyv. Public interface
+unchanged: `db.get(key)` / `db.set(key, value)`. Hash keys with sha256 under prefix
+`cache/preview/`. Flipped `isPreviewImageSupportEnabled: true`. Merged at `3d58cdf`.
+
+### PR #4 — OG card cache + R2 client de-duplication
+
+`pages/api/social-image.tsx`: cache rendered PNG bytes in R2 keyed by
+`sha256("v1:" + pageId)`. Hit returns bytes immediately with `x-og-cache: hit` (no
+Notion call, no render). Miss renders, buffers to `Uint8Array`, fire-and-forget puts
+to R2. `Cache-Control: public, max-age=0, s-maxage=86400, stale-while-revalidate=2592000`.
+
+Also extracted `lib/r2.ts` as the single R2 client + binary helper module
+(`getR2Bytes`, `putR2Bytes`, `r2Key`, `isR2Enabled`). `lib/db.ts` rebased onto
+`lib/r2.ts`, dropping its duplicate `S3Client` setup. Merged at `fa50a22`.
+
+### Step 3.1 — `next/image remotePatterns`
+
+R2 hostname `pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev` added to
+`next.config.js images.remotePatterns`. Landed inside PR #2.
+
+### Vercel env vars (already set)
+
+- `R2_ACCOUNT_ID`
+- `R2_BUCKET` = `boklanov-content`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `NEXT_PUBLIC_CDN_BASE` = `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev`
+- `ENABLE_EXPERIMENTAL_COREPACK` = `1`
+
+---
+
+## Step 3 — Runtime stability ⏳ IN PROGRESS (PR #5)
+
+After PR #4 merged, production at `boklanov.com` started 404'ing on most slugs with:
 
 ```
-379c735 ⏭
-0eadf00 feat: update react-notion-x                                 ← likely fixes replaceAll
-484c14a feat: remove react-icons in favor of local icons            ← removes @react-icons/all-files DEP0128 warning
-d2f1117 Merge PR #748 feature/update-feb-2026
-7978cd6 feat: update core deps
-0750da9 Merge PR #742 fix/static-paths-url-overrides
-97b8dd2 fix: include pageUrlOverrides in getStaticPaths for prod
-68af398 fix: upgrade notion-client to fix collection issues
+Vercel Runtime Timeout Error: Task timed out after 10 seconds
+Notion 429 Too Many Requests
+"Notion Page Not Found"
 ```
 
-Last common commit: `668c521`. Local fork commits since then:
+Two compounding root causes:
 
-```
-83008f2 fix
-e3cb7b9 fix
-53790dd merge/update
-bf795b7 fix: collection / database loading
-```
+### 1. Vercel function 10s legacy timeout
 
-These four are the fork's local divergence. They're titled vaguely; before merging, look at what they actually change so we know what to preserve through the merge.
+Vercel's Hobby plan has two function modes:
+- **Fluid compute (new default)** — Hobby: 300s default, 300s max.
+- **Legacy serverless** — 10s default and the only mode for projects created before
+  fluid compute rolled out.
 
-### Step 1.1 — Inspect local divergence
+This project was created May 2023 → legacy mode → functions die at 10s. Notion's
+`loadPageChunk` for the heavy home page (1.08 MB recordMap) routinely takes longer.
+Our `ofetch` `timeout: 30_000` was moot — Vercel killed the function first.
 
-```bash
-git log 668c521..update-main --oneline
-git diff 668c521..update-main -- site.config.ts                  # site identity
-git diff 668c521..update-main -- styles/notion.css               # visual customisation
-git diff 668c521..update-main -- components/                     # component overrides
-git diff 668c521..update-main -- lib/                            # behaviour overrides
-```
+**Attempted:** `export const config = { maxDuration: 60 }` in `pages/[pageId].tsx`
+and `pages/index.tsx`. **Did not work.** Per Vercel docs, this syntax only takes
+effect for **API routes** on Pages Router, not for SSG pages with `getStaticProps`.
 
-Expected boklanov-specific diffs to preserve:
-- `site.config.ts` — `name`, `domain`, `rootNotionPageId`, `description`, `navigationLinks`
-- `components/NotionPageHeader.tsx` if customised
-- Any palette / typography overrides in `styles/notion.css`
+**Working fix (`vercel.json` `functions` block):**
 
-The four local fork commits (`bf795b7 fix: collection/database loading` etc.) likely overlap with upstream's `68af398 fix: upgrade notion-client to fix collection issues` and `97b8dd2 fix: include pageUrlOverrides in getStaticPaths`. After upstream merge, audit whether the local `fix` commits are still needed; if upstream's solution is cleaner, drop ours.
-
-### Step 1.2 — Merge
-
-```bash
-git checkout -b sync/upstream-2026-05
-git merge upstream/main
-# Conflicts expected in: site.config.ts, package.json, possibly pnpm-lock.yaml
-# Resolution rule: take upstream for everything except boklanov-specific identity
-#   (name, domain, rootNotionPageId, navigationLinks)
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "pages/index.tsx":     { "maxDuration": 300 },
+    "pages/[pageId].tsx":  { "maxDuration": 300 },
+    "pages/api/social-image.tsx": { "maxDuration": 60 }
+  }
+}
 ```
 
-After conflict resolution:
+This is the documented path for Pages Router SSG pages. Bumped to 300 (Hobby
+fluid-compute max) since fluid mode treats Vercel time as wall-clock-not-CPU, so
+generous numbers cost nothing for most invocations.
 
-```bash
-pnpm install                              # bumps + new react-notion-x
-rm -rf .next node_modules/.cache          # clean any stale React-18 artifacts
-pnpm exec tsc --noEmit                    # confirm types still align
-pnpm build                                # the test that matters
+### 2. Soft-fail to `notFound: true` committed 404s to ISR cache
+
+The build-resilience patch from Step 1 returned `{ notFound: true, revalidate: 30 }`
+when `getStaticProps` errored. Worked at build time. **Wrong at runtime ISR** — the
+404 gets cached for the revalidate window; visitors see "Notion Page Not Found"
+stuck for 30s+ even though Notion was just transiently rate-limited.
+
+**Right pattern:** during runtime ISR regeneration, throw on error. Next preserves
+the **last-known-good** static snapshot and continues serving it. Build phase still
+needs the soft-fail or the export dies on a single bad page.
+
+**Fix (gate by `NEXT_PHASE`):**
+
+```ts
+} catch (err) {
+  console.error('page error', domain, rawPageId, err)
+  if (process.env.NEXT_PHASE === 'phase-production-build') {
+    return { notFound: true, revalidate: 60 }
+  }
+  throw err  // runtime ISR — preserve last good snapshot
+}
 ```
 
-### Step 1.3 — Re-evaluate the local Notion-timeout patches
+Also bumped `revalidate: 10` → `revalidate: 60`. 6× fewer regenerations means
+6× fewer Notion calls, fewer 429s.
 
-After merge, check:
+### Status
 
-```bash
-git diff HEAD -- lib/notion.ts pages/[pageId].tsx
-```
+PR #5 (`fix/runtime-isr-resilience`, latest commit `6677291`) is open against `main`,
+not yet merged. Until merged, production stays broken with the symptoms above.
 
-Three possibilities:
-- (a) Upstream now does the same thing → drop our patches, keep upstream.
-- (b) Upstream still has bare `notion.getPage(pageId)` → keep our `getPageWithRetry` wrapper + soft-fail.
-- (c) Upstream did something different (e.g., relocated retry logic) → adopt upstream's pattern; drop ours.
+---
 
-The patches we made:
-- `lib/notion.ts`: `getPageWithRetry` wrapper, 30s timeout, 3× exponential backoff
-- `pages/[pageId].tsx`: catch → `{ notFound: true, revalidate: 60 }` instead of `throw err`
+## Branch & PR ledger
 
-## Step 2 — Fix remaining issues
+| PR | Title | Base | Merge commit | Status |
+|---|---|---|---|---|
+| #1 | Update main (auto-PR) | — | — | CLOSED |
+| #2 | Sync upstream feb-2026 + fix Vercel production build | main | `8d76639` | ✅ MERGED |
+| #3 | feat: R2-backed preview-image cache | main | `3d58cdf` | ✅ MERGED |
+| #4 | feat: R2 cache for /api/social-image OG cards | main | `fa50a22` | ✅ MERGED |
+| #5 | fix: runtime ISR resilience — maxDuration + throw on regen | main | — | ⏳ OPEN |
 
-After step 1's `pnpm build`, the surviving error list defines step 2.
+---
 
-### Step 2.1 — `replaceAll on undefined` (current blocker before sync)
+## Open issues (after PR #5 merges)
 
-Already triaged. Source: `notion-utils` `uuidToId` / `getCanonicalPageId` family is being called with `undefined` somewhere inside `react-notion-x` rendering. React 19 + outdated `react-notion-x` is the suspect. Upstream's `0eadf00 feat: update react-notion-x` should resolve. If not:
-- Pin React to 18.3.x temporarily: `pnpm add react@^18.3 react-dom@^18.3 -E`. Trade-off: gives up React 19 features; safe for a Notion-rendered marketing site.
-- Or upgrade `react-notion-x` directly: `pnpm up react-notion-x@latest notion-client@latest notion-types@latest notion-utils@latest`.
+### A. Notion 429s still happen, just hidden by stale-while-revalidate
 
-### Step 2.2 — `Module not found: 'katex/dist/katex.min.css'`
+PR #5 prevents 429s from being **visible** to users, but Notion will still rate-limit
+during background regeneration. The site stays up because we serve stale; eventually
+content goes longer between updates than it should.
 
-Already fixed locally — `pnpm add katex` added `katex@0.16.45`. The starter kit imports `katex/dist/katex.min.css` in `pages/_app.tsx:2` but didn't declare `katex` as a direct dep; pnpm's strict resolution doesn't hoist it. Keep this dep in `package.json` even after upstream sync — upstream may or may not have added it.
+**Two real fixes**, ranked by payoff:
 
-### Step 2.3 — Multi-lockfile warning
+1. **R2 recordMap cache** (recommended next step). Same pattern as the OG cache. After
+   each successful `notion.getPage`, write the recordMap to R2 keyed by pageId. On
+   Notion 429, `getPage` falls through to R2. Notion 429s become invisible to the
+   site. ~½ day of work; new file `lib/r2-recordmap-cache.ts` + small wiring in
+   `lib/notion.ts`.
+2. **`NOTION_API_KEY`** env var passed to `notion-client` constructor. Lifts the
+   rate-limit ceiling significantly. Trade-off: adds a Notion integration token to
+   Vercel env vars; needs the Notion workspace owner to provision it.
+
+### B. Cache warming after each deploy
+
+First visitor to a slug after deploy still triggers an ISR build (5–15s wait). A
+Vercel Cron hitting `/`, `/English`, `/Контакты`, plus the top production slugs
+post-deploy would prebuild ISR pages and eliminate that wait.
+
+Out of scope for now; revisit if Roman or visitors notice the cold-start latency.
+
+### C. Multi-lockfile warning (cosmetic)
 
 ```
 We detected multiple lockfiles and selected /home/octrow/pnpm-lock.yaml as root
 ```
 
-There's a stray `pnpm-lock.yaml` at `/home/octrow/`. Either delete it (if it's a leftover from running pnpm in `$HOME` once), or pin our project root in `next.config.js`:
+Stray `pnpm-lock.yaml` at `$HOME`. Either delete it or set `outputFileTracingRoot`
+in `next.config.js`. Doesn't affect builds.
 
-```js
-// next.config.js
-const nextConfig = {
-  outputFileTracingRoot: __dirname,
-  // ...rest
-}
-```
+### D. `data for page "/" is 1.08 MB`
 
-Cosmetic; not a build-breaker. Do at end if time.
+Home page Notion recordMap is heavy. Next.js warns >128 KB. Not a deploy-breaker,
+just a perf note. The actual fix is restructuring the Notion home page to be
+smaller, which is content work, not code work.
 
-### Step 2.4 — `@react-icons/all-files` DEP0128 deprecation spam
+### E. Branch hygiene
 
-Upstream commit `484c14a feat: remove react-icons in favor of local icons` already addresses this — it should disappear after step 1.
+Local `main` and `update-main` branches drifted across the work. After PR #5 lands,
+align them so future PRs aren't reasoning about both.
 
-### Step 2.5 — Vercel build verification
+### F. PRE-THEATRE / Bury-Me / Aiaccio prerender 429s on every deploy
 
-After local `pnpm build` is green:
+Same ~5-10 slugs hit Notion 429 during each build. They render via fallback later,
+but each deploy emits the same `skipping page` warnings. Notion auth (option A2 above)
+makes this go away.
 
-```bash
-git checkout -b fix/notion-build
-git push -u origin fix/notion-build
-# open PR → watch Vercel preview → if green, merge to main
-```
+---
 
-Confirm Vercel project's "Production Branch" — currently `main`, not `update-main`. After merge to `main`, production deploy at `boklanov.com` should turn green.
+## Decisional log (things I tried that did not work)
 
-## Step 3 — Wire Cloudflare R2 for images
+| Attempt | Why it didn't work | What did work |
+|---|---|---|
+| `installCommand` override in `vercel.json` (force pnpm@10) | Vercel ignores `installCommand` in some configurations (community.vercel.com/t/30118) | `ENABLE_EXPERIMENTAL_COREPACK=1` env var |
+| Manual retry wrapper around `notion.getPage` (kyOptions, 30s timeout, 3× exponential backoff) | Worked, then became redundant when notion-client moved to ofetch which has built-in retry | Native `ofetchOptions: { retry, retryDelay, retryStatusCodes }` |
+| `throw err` on prerender error during build | Killed the whole build on a single rate-limited page | Soft-fail at build phase (`notFound + revalidate`), throw at runtime; gate by `NEXT_PHASE` |
+| `notFound: true` on runtime ISR error | Committed 404 to cache for the revalidate window — visitors saw "Notion Page Not Found" stuck | Throw on runtime ISR — Next preserves last-good snapshot |
+| `export const config = { maxDuration: 60 }` on `pages/[pageId].tsx` | Per Vercel docs, only takes effect for API routes on Pages Router, not SSG pages | `vercel.json` `functions` block |
+| Edge runtime on `/api/social-image` | 1.04 MB exceeded Hobby Edge 1 MB cap (inter-semibold font) | Node runtime (no cap; `next/og` works fine) |
+| CI `pnpm install --strict-peer-dependencies` | React 19 trips peer warnings on react-body-classname / react-side-effect / react-lazy-images | Drop the flag |
+| CI `pnpm build` | GitHub Actions shared IPs hit Notion 429 hard | Drop the build step from CI; Vercel does the real build |
 
-The R2 bucket `boklanov-content` (300 objects, 222 MB) is already populated. Five integration points, ranked by payoff. Pick what you need; each is independent.
+---
 
-Env vars (already set in Vercel + locally in `.env.local`):
-- `R2_ACCOUNT_ID` — `534e18f36968949bf03935b0d40b0216`
-- `R2_BUCKET` — `boklanov-content`
-- `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` — for S3-compatible writes/reads
-- `NEXT_PUBLIC_CDN_BASE` — `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev` (public read URL; safe to expose)
+## Final shape
 
-### Step 3.1 — Allow `next/image` to load from R2 (5-minute change, do first)
+After PR #5 merges, the cutover is structurally complete:
 
-Edit `next.config.js`:
+- Vercel production at `boklanov.com` deploys green from `main`.
+- Notion 429s are absorbed at build (skip-and-ISR) and at runtime (stale-while-revalidate).
+- R2 backs both LQIP preview images and OG card PNGs, surviving across deploys with zero
+  egress.
+- `next/image` allowed to load directly from the R2 public bucket.
+- Functions run up to 300s on Hobby fluid compute.
+- CI runs lint+prettier on every push (no Notion calls).
 
-```js
-images: {
-  remotePatterns: [
-    {
-      protocol: 'https',
-      hostname: 'pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev',
-      pathname: '/**'
-    },
-    // when cdn.boklanov.com goes live behind Cloudflare, add it here too:
-    // { protocol: 'https', hostname: 'cdn.boklanov.com', pathname: '/**' }
-  ]
-}
-```
-
-After this, anywhere we render an `<Image src={...}/>` with an R2 URL, `next/image` will optimise it.
-
-### Step 3.2 — Persistent preview-image cache (highest payoff)
-
-`isPreviewImageSupportEnabled: false` in `site.config.ts:34`. Turning it on triggers `getPreviewImageMap` (`lib/preview-images.ts`) which generates LQIP placeholders. The current cache layer (`lib/db.ts`) uses `@keyvhq/redis`, currently disabled.
-
-Migrate the cache to R2 instead:
-
-1. Add deps: `pnpm add @aws-sdk/client-s3`
-2. New file `lib/r2-cache.ts`:
-   ```ts
-   import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3'
-
-   const r2 = new S3Client({
-     region: 'auto',
-     endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-     credentials: {
-       accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-       secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!
-     }
-   })
-
-   const bucket = process.env.R2_BUCKET!
-
-   export async function getCached(key: string): Promise<string | null> { /* GetObject → text or null on 404 */ }
-   export async function setCached(key: string, value: string, contentType = 'text/plain'): Promise<void> { /* PutObject */ }
-   ```
-3. Hash-key strategy: `cache/preview/${sha256(notionImageUrl)}.b64` so keys are deterministic, immutable, and live under a known prefix that won't collide with content photos.
-4. Wire into `lib/preview-images.ts` (or `lib/db.ts`) — read R2 first, fall through to live LQIP generation, write back to R2.
-5. Flip `isPreviewImageSupportEnabled: true` in `site.config.ts`.
-
-Egress is free, build time is bounded by R2 read latency (~50ms warm), and the cache survives across deploys.
-
-### Step 3.3 — Cache OG / social images
-
-If/when this fork has an OG endpoint (`pages/api/social-image.tsx` in some forks), apply the same R2 cache pattern keyed by `cache/og/${sha256(slug + locale)}.png`. Defer until that endpoint actually exists in this fork.
-
-### Step 3.4 — Static asset hosting for custom imagery
-
-For any image outside the Notion content tree (footer portrait, fallback covers, custom hero on `/`), upload to R2 once and reference via `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev/<path>`. Combined with §3.1's `remotePatterns`, `next/image` will optimise them.
-
-Upload script suggestion (`scripts/upload-r2.mjs` — only if you want a CLI; manual upload via Cloudflare dashboard is fine for one-offs):
-
-```js
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
-import fs from 'node:fs'
-import path from 'node:path'
-// reads from process.env, walks an arg directory, uploads with mime type
-```
-
-### Step 3.5 — Rewrite Notion image proxy through R2 (advanced, optional)
-
-`react-notion-x` proxies Notion image URLs through `/api/notion-images` to bypass Notion's signed-URL expiry. Replacing this with a "fetch-once-from-Notion-cache-on-R2" endpoint would:
-- Eliminate the `loadPageChunk` timeout class of build failures (page renders no longer block on Notion's image CDN).
-- Remove dependency on Notion's signed URLs entirely.
-
-Cost: a non-trivial new endpoint + cache invalidation strategy when Roman swaps an image in Notion. Don't do this until §3.2 is in place and proven.
-
-## Sequence
-
-1. **Step 1.1 inspect** local commits (15 min) — understand what we have.
-2. **Step 1.2 merge** upstream (30 min – 2 h depending on conflicts).
-3. **Step 1.3 + Step 2.1 build** (30 min) — does `pnpm build` go green?
-   - If yes → step 2.5 deploy.
-   - If no → fix (likely React pin or `react-notion-x` direct upgrade), then step 2.5.
-4. **Step 2.5 deploy** to Vercel preview → verify → merge to `main`.
-5. **Step 3.1** R2 `remotePatterns` — quick win, separate small PR.
-6. **Step 3.2** preview-image R2 cache — separate PR, 1 day, only if preview images are wanted.
-7. Steps 3.3–3.5 — opt-in.
-
-End-to-end estimate: half a day to green Vercel (steps 1+2), one more day if §3.2 ships.
-## What this plan deliberately doesn't do
-
-- Touch the v3 rewrite in `/home/octrow/develompent/boklanov`. Out of scope.
-- Migrate this site off Notion. Notion-as-CMS stays.
-- Set up Redis. R2 replaces Redis as the cache layer per §3.2.
-- Build new components or routes. Pure plumbing + dep hygiene.
+Remaining work is **optional polish** (recordMap R2 cache, Notion auth, cache warming,
+branch cleanup) — none of it gates production health, all of it improves edge cases.
