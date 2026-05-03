@@ -6,6 +6,12 @@ import { getSiteMap } from '@/lib/get-site-map'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 import { type PageProps, type Params } from '@/lib/types'
 
+// Hobby plan caps serverless functions at 10s by default; raise to 60s
+// (Hobby max) so Notion's loadPageChunk has time on heavy pages.
+export const config = {
+  maxDuration: 60
+}
+
 export const getStaticProps: GetStaticProps<PageProps, Params> = async (
   context
 ) => {
@@ -14,14 +20,24 @@ export const getStaticProps: GetStaticProps<PageProps, Params> = async (
   try {
     const props = await resolveNotionPage(domain, rawPageId)
 
-    return { props, revalidate: 10 }
+    // Long revalidate window keeps Notion request volume low. ISR still
+    // serves the cached page instantly; regeneration happens in the
+    // background and never blocks visitors.
+    return { props, revalidate: 60 }
   } catch (err) {
     console.error('page error', domain, rawPageId, err)
 
-    // Soft-fail: with fallback: true + ISR, a transient Notion failure
-    // should not kill the whole production build. The page hydrates on
-    // first request via getStaticProps re-run.
-    return { notFound: true, revalidate: 60 }
+    // Build phase: soft-fail so one bad page doesn't kill the whole export.
+    // fallback: true + getStaticPaths still lists this slug; ISR will hydrate
+    // on first request when Notion responds.
+    if (process.env.NEXT_PHASE === 'phase-production-build') {
+      return { notFound: true, revalidate: 60 }
+    }
+
+    // Runtime ISR: throw to keep serving the last-known-good cached page.
+    // Returning notFound here would commit a 404 to the cache for the
+    // revalidate window, which is what visitors saw before this fix.
+    throw err
   }
 }
 
