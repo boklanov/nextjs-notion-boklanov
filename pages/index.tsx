@@ -3,27 +3,16 @@ import { NotionPage } from '@/components/NotionPage'
 import { domain } from '@/lib/config'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 
-// `vercel.json` `functions` block actually sets this for SSG pages.
-// 60s is the Hobby plan cap; upgrade to Pro for 300s.
-export const config = {
-  maxDuration: 60
-}
-
 export const getStaticProps = async () => {
   try {
     const props = await resolveNotionPage(domain)
 
-    return { props, revalidate: 60 }
+    return { props, revalidate: 10 }
   } catch (err) {
     console.error('page error', domain, err)
 
-    // Build phase: soft-fail. fallback: true means home hydrates on first
-    // request when Notion responds.
-    if (process.env.NEXT_PHASE === 'phase-production-build') {
-      return { notFound: true, revalidate: 60 }
-    }
-
-    // Runtime ISR: throw to keep serving the last-known-good snapshot.
+    // we don't want to publish the error version of this page, so
+    // let next.js know explicitly that incremental SSG failed
     throw err
   }
 }

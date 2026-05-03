@@ -33,12 +33,8 @@ const getAllPages = pMemoize(getAllPagesImpl, {
 const getPage = async (pageId: string, opts?: any) => {
   console.log('\nnotion getPage', uuidToId(pageId))
   return notion.getPage(pageId, {
-    ofetchOptions: {
-      timeout: 30_000,
-      retry: 3,
-      retryDelay: 2000,
-      // Retry on 429 (rate limit) and transient 5xx during build.
-      retryStatusCodes: [408, 409, 425, 429, 500, 502, 503, 504]
+    kyOptions: {
+      timeout: 30_000
     },
     ...opts
   })
@@ -66,13 +62,7 @@ async function getAllPagesImpl(
     (map: Record<string, string>, pageId: string) => {
       const recordMap = pageMap[pageId]
       if (!recordMap) {
-        // Tolerate transient failures (rate limits, timeouts) during build:
-        // skip this page in the static path list so the export doesn't die.
-        // fallback: true + ISR in pages/[pageId].tsx hydrates it on first request.
-        console.warn(
-          `skipping page "${pageId}" — recordMap missing (likely rate-limited)`
-        )
-        return map
+        throw new Error(`Error loading page "${pageId}"`)
       }
 
       const block = getBlockValue(recordMap.block[pageId])
