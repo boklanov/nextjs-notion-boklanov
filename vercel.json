@@ -2,10 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "pages/index.tsx": {
-      "maxDuration": 300
+      "maxDuration": 60
     },
     "pages/[pageId].tsx": {
-      "maxDuration": 300
+      "maxDuration": 60
     },
     "pages/api/social-image.tsx": {
       "maxDuration": 60

@@ -4,8 +4,9 @@ import { domain } from '@/lib/config'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 
 // `vercel.json` `functions` block actually sets this for SSG pages.
+// 60s is the Hobby plan cap; upgrade to Pro for 300s.
 export const config = {
-  maxDuration: 300
+  maxDuration: 60
 }
 
 export const getStaticProps = async () => {

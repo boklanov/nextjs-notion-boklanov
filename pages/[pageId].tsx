@@ -8,9 +8,9 @@ import { type PageProps, type Params } from '@/lib/types'
 
 // `vercel.json` `functions` block is what actually sets maxDuration for
 // SSG pages on Pages Router (per Vercel docs); this export is a hint —
-// it only takes effect for API routes.
+// it only takes effect for API routes. 60s is the Hobby plan cap.
 export const config = {
-  maxDuration: 300
+  maxDuration: 60
 }
 
 export const getStaticProps: GetStaticProps<PageProps, Params> = async (

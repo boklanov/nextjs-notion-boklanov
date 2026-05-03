@@ -55,22 +55,24 @@ Two reasons it doesn't help in practice:
 
 ## 🔧 What needs to ship next
 
-### PR #6 — vercel.json + maxDuration 300 (OPEN, immediate)
+### PR #6 — vercel.json + maxDuration 60 (OPEN, immediate)
 
 The PR #5 follow-up that missed the merge. Adds:
 
 ```json
 {
   "functions": {
-    "pages/index.tsx":            { "maxDuration": 300 },
-    "pages/[pageId].tsx":         { "maxDuration": 300 },
+    "pages/index.tsx":            { "maxDuration": 60 },
+    "pages/[pageId].tsx":         { "maxDuration": 60 },
     "pages/api/social-image.tsx": { "maxDuration": 60 }
   }
 }
 ```
 
-300s is the Hobby fluid-compute max. Without this, Vercel kills the function at 10s,
-giving Notion's `loadPageChunk` no time to respond on the heavy home page.
+60s is the current Hobby plan cap (300 was rejected with
+`The value for maxDuration must be between 1 second and 60 seconds, in order to increase this limit upgrade your plan`).
+Without this, Vercel kills the function at the legacy 10s default — no time for
+Notion's `loadPageChunk` on the heavy home page.
 
 ### Option A — R2 recordMap cache (RECOMMENDED, ~½ day)
 
@@ -122,7 +124,7 @@ after each deploy so first real visitors don't trigger cold ISR. Best paired wit
 - `lib/db.ts` — preview-image cache (PR #3, on R2)
 - `pages/api/social-image.tsx` — OG endpoint with R2 cache (PR #4)
 - `pages/index.tsx`, `pages/[pageId].tsx` — phase-aware error handling, `revalidate: 60`
-- `vercel.json` — `functions` block sets `maxDuration: 300` for SSG pages (PR #6)
+- `vercel.json` — `functions` block sets `maxDuration: 60` for SSG pages (PR #6)
 - `next.config.js` — R2 host in `images.remotePatterns`
 - `site.config.ts` — `isPreviewImageSupportEnabled: true`
 - `.github/workflows/build.yml` — CI runs lint + prettier only (no `pnpm build`)
