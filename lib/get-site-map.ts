@@ -69,7 +69,9 @@ async function getAllPagesImpl(
         // Tolerate transient failures (rate limits, timeouts) during build:
         // skip this page in the static path list so the export doesn't die.
         // fallback: true + ISR in pages/[pageId].tsx hydrates it on first request.
-        console.warn(`skipping page "${pageId}" — recordMap missing (likely rate-limited)`)
+        console.warn(
+          `skipping page "${pageId}" — recordMap missing (likely rate-limited)`
+        )
         return map
       }
 
