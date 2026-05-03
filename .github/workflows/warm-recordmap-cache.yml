@@ -1,0 +1,63 @@
+name: Warm Notion recordMap cache
+
+# Walks the entire space from rootNotionPageId and caches each page's
+# recordMap to R2. Production's lib/notion.ts:getPage falls back to these
+# snapshots whenever Notion 429s a runtime ISR regen — so a warm R2 means
+# visitors never see "Notion Page Not Found" even when Notion throttles
+# Vercel's egress IPs.
+#
+# Runs:
+#   - on demand (workflow_dispatch from the GitHub UI)
+#   - daily 03:00 UTC
+#   - after merges to main (assumed Notion content may have changed)
+#
+# Failure policy: NON-BLOCKING. continue-on-error is set so the run is
+# marked successful regardless. If GitHub Actions IPs end up being
+# rate-limited by Notion, the existing R2 cache stays in place — no
+# regression. Check the run logs to see the per-page outcome.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'
+  push:
+    branches: [main]
+
+# Don't queue multiple warmers; one in flight is plenty.
+concurrency:
+  group: warm-recordmap-cache
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    name: Walk root and cache to R2
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Warm cache (best-effort)
+        continue-on-error: true
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
+          NOTION_ACTIVE_USER: ${{ secrets.NOTION_ACTIVE_USER }}
+        run: node scripts/warm-recordmap-cache.mjs --all
+
+      - name: Note on outcome
+        if: always()
+        run: |
+          echo "::notice::Warmer finished. See the previous step's log for per-page outcome."
+          echo "::notice::Failures here are non-blocking — existing R2 snapshots stay in place."
