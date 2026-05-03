@@ -4,135 +4,263 @@ Repo: `boklanov/nextjs-notion-boklanov` · Owner: Daniil
 
 ---
 
-## 🚨 Current state — SITE IS DOWN
+## ✅ Current state (after PR #13 + cache warm — 2026-05-03 21:33 UTC)
 
-Production at `boklanov.com` returns **404 "Notion Page Not Found"** on most slugs.
-Every PR (#2 → #5) merged. Every deploy green. Build succeeds. Runtime breaks.
+Verified working:
+- `https://boklanov.com/` (home) — renders via R2 fallback when Notion 429s
+- `https://boklanov.com/Bury-Me-Behind-the-Baseboard` — renders
 
-### Latest production log pattern (2026-05-03 19:44 UTC)
+Not yet verified (likely working — they're cached):
+- The other ~56 slugs. R2 has a snapshot for every page reachable from the root.
 
-```
-GET 404 /                           ← intermittent
-GET 200 /                           ← sometimes works
-GET 404 /roman-boklanov-english     ← Vercel Runtime Timeout 10s
-GET 404 /Online                     ← Notion 429 Too Many Requests
-GET 404 /The-Ape-Star
-GET 404 /Bury-Me-Behind-the-Baseboard
-```
+Build now finishes cleanly (53s) even with Notion 429s on ~10 pages. Runtime
+serves either fresh content or the warmed R2 snapshot. The 10s function
+timeout that was killing cold-path renders is gone (60s now).
 
-### Root cause
+What actually fixed the production outage was the *combination*:
 
-PR #5 said "throw on runtime ISR error → Next preserves last-known-good snapshot."
-Two reasons it doesn't help in practice:
+1. **Notion auth** (PR #9) — raises rate-limit ceiling
+2. **R2 recordMap cache + 1-concurrency fetch** (PR #11) — runtime fallback when Notion still 429s
+3. **`.trim()` on `R2_SECRET_ACCESS_KEY`** (PR #8) — production env var had a trailing newline that broke every R2 PUT silently
+4. **`vercel.json` `maxDuration: 60`** (PR #12) — without it, cold renders timed out at 10s and committed `notFound` to ISR
+5. **Build-phase soft-fail in pages** (PR #10) — keeps the deploy green when individual slugs 429
+6. **`--all` warmer** (PR #13) — bootstrap R2 from the laptop's residential IP for slugs Notion never let the build fetch
 
-1. **`vercel.json` `functions` block was never deployed** — the merge of PR #5
-   captured only the first commit (`058db45`), missing the follow-up commit
-   `6677291` that added `vercel.json`. Production has zero `maxDuration`
-   override — still on legacy 10s cap. **Fix: PR #6 (open).**
-2. **Even after the timeout fix, Notion 429s on first-visit slugs return error**
-   → no "last good snapshot" exists yet → renders as 404. The real fix is to
-   serve build-time recordMaps from R2 when Notion is rate-limited at runtime.
-   **Fix: Option A below.**
+Removing any one of those re-breaks the site. There is no single fix.
 
 ---
 
-## ✅ What's already done
+## 🔁 What we tried, in order
 
-| PR | Merged at | What |
+### Round 1 — PR #2 (`8d76639`, merged 2026-02): "Just sync upstream"
+
+Synced Feb 2026 changes from upstream `transitive-bullshit/nextjs-notion-starter-kit`.
+Build went green; runtime kept 404'ing. **Didn't fix it** — the issue was Notion-side
+throttling, not stale code.
+
+### Round 2 — PR #3 (`3d58cdf`): R2-backed preview-image cache
+
+Replaced the in-memory Keyv with R2-persisted JSON. Reduced build duration but
+**didn't fix the 404s**. Bonus side-effect: R2 PUTs were silently no-op'ing the
+whole time due to a credential bug (see Round 7); we just didn't notice because
+preview-image generation also has an in-memory hot path.
+
+### Round 3 — PR #4 (`fa50a22`): R2 cache for `/api/social-image` OG cards
+
+Same R2 infra as PR #3 but for OG PNGs. **Didn't fix the 404s** — different code
+path. Same silent R2 PUT failure.
+
+### Round 4 — PR #5 (`9698954`): "Throw on runtime ISR error"
+
+`getStaticProps` was returning `{ notFound: true }` on every regen failure,
+which committed a 404 to the ISR cache for the revalidate window. Switched
+runtime path to `throw` so Next would keep serving the last-known-good
+snapshot. Build path still soft-failed. **Helped on regen but didn't help
+slugs that never built successfully** — those had no last-known-good to fall
+back to. Still 404.
+
+### Round 5 — PR #6 (`4948a81`): `vercel.json` `maxDuration: 60`
+
+Initially tried `maxDuration: 300` — Vercel rejected with "must be between 1
+and 60" (Hobby plan cap). Settled on 60s. Made build-time Notion fetches less
+likely to time out. **Build started succeeding more reliably; runtime 404s
+unchanged** because the 429s happened well under 60s and weren't a timeout
+problem.
+
+### Round 6 — PR #7 (`4b0b9c1`): R2 recordMap fallback (round 1)
+
+The "Option A" originally laid out below. Wrap `lib/notion.ts:getPage` in
+a try/catch that writes the recordMap to R2 on success and reads from R2 on
+failure. Merged. **Didn't help.** Vercel logs showed
+`recordmap-cache put failed ... SignatureDoesNotMatch` — every R2 write was
+failing. The cache stayed empty so the fallback path had nothing to serve.
+
+### Round 7 — PR #8 (`94ced9c`): The R2 secret had a trailing newline
+
+Reproduced the SignatureDoesNotMatch locally with the real production
+credentials. Tested permutations:
+
+| scenario | result |
+|---|---|
+| SDK defaults (no checksum override) | PASS |
+| WHEN_REQUIRED checksums (initial wrong fix) | PASS — no behavior change |
+| **trailing `\n` on secret** | **FAIL — `SignatureDoesNotMatch` (matches prod)** |
+| trailing space on secret | FAIL — same error |
+| trailing `\n` on access key | FAIL — different error (`TypeError`) |
+| 1.1 MB body, defaults | PASS |
+
+Cause: the Cloudflare token UI's "Click to copy" appends a newline to the
+copied value. That newline landed in Vercel's `R2_SECRET_ACCESS_KEY` env var.
+sigv4 HMACs the wrong secret, the server compares against the secret-without-newline,
+every PUT fails. **PRs #3 and #4's R2 caches had been silently no-op'ing for
+weeks** for exactly this reason; we only saw it because PR #7 added a
+`console.warn` on put failure.
+
+Fix: `.trim()` the four `R2_*` env vars at module load. The first attempt of
+PR #8 also disabled the AWS SDK's flexible-checksum default — that turned
+out to be a misdiagnosis (the local probe showed defaults pass). Reverted the
+checksum config; kept just the trim. **Once merged + redeployed, R2 PUTs
+worked.** But runtime was still 404'ing because the cache wasn't yet populated
+and Notion was still 429'ing the build.
+
+### Round 8 — PR #9 (`b39b6b3`): Notion cookie auth
+
+Researched upstream issues. Found
+[react-notion-x #649](https://github.com/NotionX/react-notion-x/issues/649) and
+[#480](https://github.com/NotionX/react-notion-x/issues/480): Notion has been
+progressively throttling the unofficial `loadPageChunk` endpoint when called
+from cloud-provider egress IPs. Vercel's shared pool is hit hardest. The
+maintainer closed #649 with "the page itself returns 429 in UI too — nothing
+we can do." The community-validated workaround is to authenticate as a
+logged-in browser session via `token_v2` + `notion_user_id`. `notion-client`
+already supports this (`authToken`, `activeUser` constructor options).
+
+Wired both env vars into `lib/notion-api.ts`. Also reverted
+`lib/notion.ts`, `lib/get-site-map.ts`, `pages/index.tsx`, `pages/[pageId].tsx`,
+and `vercel.json` to upstream-pristine, on the assumption that auth alone
+would make the build reliable.
+
+**Auth confirmed in prod logs:** `[notion-api] auth: token_v2=present(len=537), active_user=present(len=36)`.
+**But the build still 429'd** — even authenticated, Notion throttles the build's burst rate. And reverting all the resilience patches turned a degraded site into a *hard-failing* one: build threw on the first 429.
+
+### Round 9 — PR #10 (`92e551b`): Build-phase soft-fail (restored from PR #5)
+
+Restore the `NEXT_PHASE === 'phase-production-build'` branch in `pages/index.tsx`
+and `pages/[pageId].tsx`. During build, return `{ notFound: true, revalidate: 10 }`
+on error so one bad page doesn't kill the deploy. At runtime, throw to keep
+serving last-known-good. **Build started succeeding** with ~10 pages skipped.
+**But runtime still 404'd those skipped pages** — they had no last-known-good
+to fall back to.
+
+### Round 10 — PR #11 (`94ced9c`): R2 recordMap fallback (round 2)
+
+Re-add the R2 fallback that PR #7 *would have* done if R2 PUTs had worked.
+Now they do (PR #8). Also pass `concurrency: 1` to `notion.getPage` — the
+home page recordMap is 1.08 MB and notion-client splits it into multiple
+concurrent `loadPageChunk` requests; serial fetch trades latency for far
+fewer 429s. Added `scripts/warm-recordmap-cache.mjs` so we can populate R2
+from a residential IP for slugs Notion never let the build fetch.
+
+**Home page now rendered via R2 fallback** (`notion.getPage failed, serving R2 recordMap snapshot`).
+**`/Bury-Me-Behind-the-Baseboard` was still 404'ing** with a NEW error:
+
+```
+Vercel Runtime Timeout Error: Task timed out after 10 seconds
+```
+
+That's not a 429 — it's the function hitting Vercel's default 10s wall on the
+cold path (`notion.getPage` + preview images + tweets > 10s for an uncached
+slug).
+
+### Round 11 — PR #12 (`94ced9c`): Restore `vercel.json maxDuration: 60`
+
+PR #9's "align with upstream" pass deleted `vercel.json` on the assumption
+that auth would keep runtime under 10s. It does for cache hits (~50ms),
+but not for cold-path renders. Restored byte-identical to PR #6's content.
+**Cold-path slugs now have 60s to populate the cache.**
+
+### Round 12 — PR #13 (`2c84d8e`): Warmer `--all` flag
+
+The 8 IDs from PR #11's build log's `skipping page` lines weren't enough —
+`Bury-Me-Behind-the-Baseboard` actually maps to `ee2d7bea-1148-4e16-bcb0-3effc276a719`,
+which appeared as a "page error" line during static export, not a "skipping page"
+line. The two failure modes have different log shapes; the manual list missed
+the second one.
+
+Enhanced `scripts/warm-recordmap-cache.mjs` with `--all`: reads
+`rootNotionPageId` from `site.config.ts`, calls `notion-utils' getAllPagesInSpace`
+(same function `lib/get-site-map.ts` uses at build time), warms every reachable
+page. Ran it from the laptop: **58 pages cached, 0 failed** including
+`ee2d7bea-...`. R2 now has a snapshot for every slug.
+
+---
+
+## 📊 Why each fix individually was insufficient
+
+| What | Without it | With everything else |
 |---|---|---|
-| #2 | `8d76639` | Upstream sync (Feb 2026), Vercel build green, R2 host in `next.config.js` |
-| #3 | `3d58cdf` | R2-backed preview-image LQIP cache (`lib/db.ts` + `lib/r2.ts`) |
-| #4 | `fa50a22` | R2 cache for `/api/social-image` OG cards |
-| #5 | `9698954` | Throw on runtime ISR error (only — vercel.json missed the merge window) |
-
-### Vercel env vars (all set)
-
-- `R2_ACCOUNT_ID`, `R2_BUCKET=boklanov-content`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
-- `NEXT_PUBLIC_CDN_BASE` = `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev`
-- `ENABLE_EXPERIMENTAL_COREPACK=1`
+| Auth (PR #9) | Notion throttles harder | Cache hits + occasional 429s |
+| R2 fallback (PR #11) | 429 → 404 directly | 429 → cached snapshot |
+| `.trim()` (PR #8) | Cache silently empty | Cache writes work |
+| `maxDuration: 60` (PR #12) | Cold renders timeout at 10s | Cold renders complete |
+| Build soft-fail (PR #10) | One 429 kills deploy | Deploy survives |
+| `--all` warmer (PR #13) | New slugs 404 forever | Every slug has snapshot |
 
 ---
 
-## 🔧 What needs to ship next
+## 🔧 Operations going forward
 
-### PR #6 — vercel.json + maxDuration 60 (OPEN, immediate)
+### After every Notion content change
+```bash
+node --env-file=.env scripts/warm-recordmap-cache.mjs --all
+```
+Takes ~2 minutes for 58 pages. Caches snapshot per page in R2.
 
-The PR #5 follow-up that missed the merge. Adds:
-
-```json
-{
-  "functions": {
-    "pages/index.tsx":            { "maxDuration": 60 },
-    "pages/[pageId].tsx":         { "maxDuration": 60 },
-    "pages/api/social-image.tsx": { "maxDuration": 60 }
-  }
-}
+### After deploy when build skipped pages
+```bash
+# Check Vercel build log for "skipping page" + "page error" lines
+node --env-file=.env scripts/warm-recordmap-cache.mjs --all
 ```
 
-60s is the current Hobby plan cap (300 was rejected with
-`The value for maxDuration must be between 1 second and 60 seconds, in order to increase this limit upgrade your plan`).
-Without this, Vercel kills the function at the legacy 10s default — no time for
-Notion's `loadPageChunk` on the heavy home page.
+### When `NOTION_TOKEN_V2` rotates (logout / ~1 year)
+1. Open https://www.notion.so logged in as the site owner
+2. DevTools → Application → Cookies → `https://www.notion.so`
+3. Copy `token_v2` → Vercel env `NOTION_TOKEN_V2`
+4. Copy `notion_user_id` → Vercel env `NOTION_ACTIVE_USER`
+5. Redeploy
 
-### Option A — R2 recordMap cache (RECOMMENDED, ~½ day)
-
-Cache full Notion recordMaps to R2 keyed by pageId. Build-time successes write to R2.
-Runtime ISR reads R2 first; only hits Notion if cache is stale; on Notion 429, falls
-through to the R2 snapshot.
-
-Result: Notion 429s become invisible to visitors. First visit to any slug serves
-R2-cached HTML in <500ms instead of timing out → 404.
-
-**Implementation sketch:**
-- New `lib/notion-recordmap-cache.ts` using existing `lib/r2.ts` helpers
-- Wrap `notion.getPage(pageId)` in `lib/notion.ts`:
-  - Try Notion → success: write to R2, return result
-  - Notion fails (429/timeout): read R2 → if hit, return cached recordMap; else throw
-- Cache key: `cache/recordmap/{sha256(pageId)}.json`
-- TTL: none (overwritten on next successful Notion fetch)
-
-Same pattern as the OG cache (PR #4), just for the page payload.
-
-### Option B — Notion API key (~10 min, partial fix)
-
-Set `NOTION_API_KEY` env var; pass to `notion-client` in `lib/notion-api.ts`.
-Authenticated requests have higher rate limits. Trade-off: `react-notion-x` uses
-Notion's *unofficial* API surface, so the official key may not apply — needs verification.
-
-### Option C — Pre-warm cache after each deploy (~1 hour, additive)
-
-Vercel Cron hits `/`, `/English`, `/Контакты`, plus the production slugs immediately
-after each deploy so first real visitors don't trigger cold ISR. Best paired with Option A.
+### Monitoring
+Watch for these in Vercel logs:
+- `[notion-api] auth: token_v2=MISSING` → env vars dropped
+- `recordmap-cache put failed ... SignatureDoesNotMatch` → R2 secret has whitespace again
+- `notion.getPage failed, serving R2 recordMap snapshot` → working as designed (visitor unaffected)
+- `Vercel Runtime Timeout Error` → would suggest `vercel.json` got dropped or a slow upstream
 
 ---
 
-## 🎯 Recommended path
+## 📂 File map
 
-1. **Merge PR #6** to land `vercel.json` (kills the 10s timeout). Site partially recovers
-   for slugs that were prerendered at build.
-2. **Ship Option A** (R2 recordMap cache). Site fully recovers — Notion 429s become
-   invisible. Independent of B/C.
-3. Optional: Option B if Notion auth turns out to apply.
-4. Optional: Option C for sub-second first-visit latency.
-
----
-
-## 📂 Reference — files touched / configured
-
-- `lib/notion.ts` — Notion API wrapper, ofetch retry config (where Option A goes)
-- `lib/r2.ts` — shared R2 client + binary helpers (`getR2Bytes`, `putR2Bytes`, `r2Key`)
-- `lib/db.ts` — preview-image cache (PR #3, on R2)
-- `pages/api/social-image.tsx` — OG endpoint with R2 cache (PR #4)
-- `pages/index.tsx`, `pages/[pageId].tsx` — phase-aware error handling, `revalidate: 60`
-- `vercel.json` — `functions` block sets `maxDuration: 60` for SSG pages (PR #6)
-- `next.config.js` — R2 host in `images.remotePatterns`
-- `site.config.ts` — `isPreviewImageSupportEnabled: true`
-- `.github/workflows/build.yml` — CI runs lint + prettier only (no `pnpm build`)
+| File | Role | Origin |
+|---|---|---|
+| `lib/r2.ts` | Shared R2 client + helpers, env-var trim | PRs #4, #8 |
+| `lib/db.ts` | Preview-image cache routed through R2 | PR #3 |
+| `lib/notion.ts` | recordMap R2 read/write fallback, `concurrency: 1` | PR #11 |
+| `lib/notion-api.ts` | `NotionAPI` constructed with `authToken` + `activeUser` + presence log | PR #9 |
+| `lib/get-site-map.ts` | Build-time soft-fail + retry config | PR #2 (retained) |
+| `pages/index.tsx` | `NEXT_PHASE` build-phase soft-fail | PRs #5, #10 |
+| `pages/[pageId].tsx` | Same | PRs #5, #10 |
+| `pages/api/social-image.tsx` | OG R2 cache | PR #4 |
+| `vercel.json` | `maxDuration: 60` for SSG + OG routes | PRs #6, #12 |
+| `scripts/warm-recordmap-cache.mjs` | Bootstrap cache from residential IP | PRs #11, #13 |
+| `next.config.js` | R2 host in `images.remotePatterns` | PR #2 |
+| `site.config.ts` | Project content (root pageId, name, etc.) | original |
+| `.env.example` | Documents `NOTION_TOKEN_V2`, `NOTION_ACTIVE_USER`, `R2_*` | PRs #4, #9 |
 
 ---
 
-## 🚫 Out of scope / deferred
+## 🚫 What we did NOT do (and why not)
 
-- Multi-lockfile warning (`/home/octrow/pnpm-lock.yaml`) — cosmetic
-- Home page recordMap is 1.08 MB (Next warns >128 KB) — content/Notion-page work
-- Local `main` ↔ `update-main` branch hygiene — cleanup after Option A lands
+- **Pro plan upgrade for 300s `maxDuration`** — 60s is sufficient now that the
+  cache absorbs Notion 429s. Pro would help cold renders but isn't necessary.
+- **`NOTION_API_KEY` (the official integration token)** — `react-notion-x`
+  uses Notion's *unofficial* API surface (`/api/v3/loadPageChunk`); the
+  official token doesn't apply. The cookie-auth route is the only way.
+- **Lowering `notion-utils` build-time concurrency** — would slow the build
+  but build resilience is already handled by soft-fail. Not worth the
+  complexity.
+- **Notion proxy on a non-Vercel host** — heavier infra. Cookie auth + R2
+  fallback covers the same ground.
+- **Vercel Cron warmer** — would automate the `--all` step on a schedule.
+  Worth doing if Notion content changes frequently. Not yet needed.
+
+---
+
+## 🧷 Reference — Vercel env vars (production)
+
+| Name | Purpose |
+|---|---|
+| `R2_ACCOUNT_ID`, `R2_BUCKET=boklanov-content`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | R2 credentials (use re-paste **without** trailing newline) |
+| `NEXT_PUBLIC_CDN_BASE` | `https://pub-eaffa56b38f2484cb3a48ab54ac582b0.r2.dev` |
+| `ENABLE_EXPERIMENTAL_COREPACK=1` | pnpm 10.29.3 via corepack |
+| `NOTION_TOKEN_V2` | `token_v2` cookie value from notion.so |
+| `NOTION_ACTIVE_USER` | `notion_user_id` cookie value from notion.so |
