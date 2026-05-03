@@ -6,10 +6,11 @@ import { getSiteMap } from '@/lib/get-site-map'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 import { type PageProps, type Params } from '@/lib/types'
 
-// Hobby plan caps serverless functions at 10s by default; raise to 60s
-// (Hobby max) so Notion's loadPageChunk has time on heavy pages.
+// Per Vercel docs, `export const config = { maxDuration }` only takes
+// effect for API routes on Pages Router. SSG/ISR pages need the
+// `functions` block in vercel.json. Kept here as a harmless hint.
 export const config = {
-  maxDuration: 60
+  maxDuration: 300
 }
 
 export const getStaticProps: GetStaticProps<PageProps, Params> = async (
