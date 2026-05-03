@@ -17,7 +17,9 @@ import { mapImageUrl } from '@/lib/map-image-url'
 import { notion } from '@/lib/notion-api'
 import { type NotionPageInfo, type PageError } from '@/lib/types'
 
-export const runtime = 'edge'
+// Edge runtime caps the function bundle at 1 MB on the Hobby plan; the
+// inter-semibold font payload alone pushes past that. Node runtime has no
+// such cap and `next/og`'s ImageResponse runs there since Next 13.3.
 
 export default async function OGImage(
   req: NextApiRequest,
