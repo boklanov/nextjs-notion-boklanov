@@ -18,8 +18,15 @@ export const getStaticProps: GetStaticProps<PageProps, Params> = async (
   } catch (err) {
     console.error('page error', domain, rawPageId, err)
 
-    // we don't want to publish the error version of this page, so
-    // let next.js know explicitly that incremental SSG failed
+    // Build phase: soft-fail so a Notion 429 during pnpm build doesn't kill
+    // the whole deploy. fallback: true + ISR will hydrate this slug on
+    // first visit, where Notion-cookie auth makes regen reliable.
+    if (process.env.NEXT_PHASE === 'phase-production-build') {
+      return { notFound: true, revalidate: 10 }
+    }
+
+    // Runtime: throw so we keep serving the last-known-good ISR snapshot
+    // instead of caching a 404 for the revalidate window.
     throw err
   }
 }
