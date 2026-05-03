@@ -7,15 +7,30 @@ Three steps, in order: **(1) sync from upstream** → **(2) fix remaining issues
 ## State as of 2026-05-03
 
 - `.env` removed from git tracking ✓
-- Vercel env vars added (`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `NEXT_PUBLIC_CDN_BASE`) ✓
-- **Step 1 DONE** — `sync/upstream-2026-05` branch merged ~20 commits from `upstream/main`. Conflicts in `next.config.js`, `package.json`, `pnpm-lock.yaml` resolved.
-- **Step 2 DONE** — `pnpm build` passes locally on `sync/upstream-2026-05`. Build emits 4/4 static pages, home prerendered, other Notion pages on `fallback:true + ISR`. Required fixes after sync:
+- Vercel env vars added (`R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `NEXT_PUBLIC_CDN_BASE`, `ENABLE_EXPERIMENTAL_COREPACK=1`) ✓
+- **Step 1 DONE** — `sync/upstream-2026-05` branch merged ~20 commits from `upstream/main`. Conflicts in `next.config.js`, `package.json`, `pnpm-lock.yaml` resolved. Local boklanov identity preserved.
+- **Step 2 DONE** — `pnpm build` passes both locally and on Vercel. Required fixes after sync:
   - `kyOptions` → `ofetchOptions` (notion-client 7.10 migrated to ofetch)
   - Use ofetch built-in retry (3× with 2s base delay, retry on 408/409/425/429/5xx)
-  - Tolerate missing `recordMap` in `getAllPagesImpl` instead of throwing
+  - Tolerate missing `recordMap` in `getAllPagesImpl` (skip page from static path list, ISR rebuilds)
+  - Soft-fail on `pages/index.tsx` and `pages/[pageId].tsx` (return `notFound + revalidate` instead of throwing)
   - Drop `eslint` key from `next.config.js` (Next 16 removed support)
+  - `pages/api/social-image.tsx`: drop `runtime = 'edge'` (1 MB Hobby plan cap; Node runtime is fine)
+  - CI: drop `pnpm build` step (GHA shared IPs hit Notion 429 hard); CI does lint + prettier only
 - **Step 3.1 DONE** — R2 hostname added to `next.config.js images.remotePatterns`.
-- **Pending**: push `sync/upstream-2026-05` → Vercel preview → confirm green → PR to `main`.
+- **PR #2 MERGED** to `main` as `8d76639` on 2026-05-03 13:56 UTC. Vercel preview `8JFAZ9Qe1YJmnKvpJsQMppaGuY4D` deployed clean in 1m39s. Production deploy from new `main` triggered automatically.
+
+## Known runtime behaviour after deploy
+
+Notion still rate-limits a handful of pages during each Vercel build (429s on `/api/v3/loadPageChunk`). Build absorbs them; affected slugs render via ISR on first request:
+- First visit to a rate-limited slug: ~5–15s wait while `getStaticProps` runs.
+- Subsequent visits: instant from cache (10/30/60s revalidate windows).
+- Visitor hits `/` during the 30s ISR window for the home page: 404 until ISR re-runs.
+
+Mitigations available if 429s become user-visible:
+1. **Notion auth** — set `NOTION_API_KEY` env var, pass to `notion-client` constructor. Lifts rate-limit ceiling significantly.
+2. **Cache warming** — Vercel Cron or scheduled function hitting `/`, `/English`, `/Контакты`, plus the production slugs after each deploy.
+3. **R2 preview-image cache** (Step 3.2) — also reduces inflight Notion requests because LQIPs are no longer regenerated each build.
 
 ## Step 1 — Sync from upstream `transitive-bullshit/nextjs-notion-starter-kit`
 
