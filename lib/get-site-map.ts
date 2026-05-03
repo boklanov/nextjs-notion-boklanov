@@ -1,8 +1,13 @@
-import { getAllPagesInSpace, uuidToId } from 'notion-utils'
+import {
+  getAllPagesInSpace,
+  getBlockValue,
+  getPageProperty,
+  uuidToId
+} from 'notion-utils'
 import pMemoize from 'p-memoize'
 
+import type * as types from './types'
 import * as config from './config'
-import * as types from './types'
 import { includeNotionIdInUrls } from './config'
 import { getCanonicalPageId } from './get-canonical-page-id'
 import { notion } from './notion-api'
@@ -12,7 +17,7 @@ const uuid = !!includeNotionIdInUrls
 export async function getSiteMap(): Promise<types.SiteMap> {
   const partialSiteMap = await getAllPages(
     config.rootNotionPageId,
-    config.rootNotionSpaceId
+    config.rootNotionSpaceId ?? undefined
   )
 
   return {
@@ -25,31 +30,61 @@ const getAllPages = pMemoize(getAllPagesImpl, {
   cacheKey: (...args) => JSON.stringify(args)
 })
 
+const getPage = async (pageId: string, opts?: any) => {
+  console.log('\nnotion getPage', uuidToId(pageId))
+  return notion.getPage(pageId, {
+    ofetchOptions: {
+      timeout: 30_000,
+      retry: 3,
+      retryDelay: 2000,
+      // Retry on 429 (rate limit) and transient 5xx during build.
+      retryStatusCodes: [408, 409, 425, 429, 500, 502, 503, 504]
+    },
+    ...opts
+  })
+}
+
 async function getAllPagesImpl(
   rootNotionPageId: string,
-  rootNotionSpaceId: string
+  rootNotionSpaceId?: string,
+  {
+    maxDepth = 1
+  }: {
+    maxDepth?: number
+  } = {}
 ): Promise<Partial<types.SiteMap>> {
-  const getPage = async (pageId: string, ...args) => {
-    console.log('\nnotion getPage', uuidToId(pageId))
-    return notion.getPage(pageId, ...args)
-  }
-
   const pageMap = await getAllPagesInSpace(
     rootNotionPageId,
     rootNotionSpaceId,
-    getPage
+    getPage,
+    {
+      maxDepth
+    }
   )
 
   const canonicalPageMap = Object.keys(pageMap).reduce(
-    (map, pageId: string) => {
+    (map: Record<string, string>, pageId: string) => {
       const recordMap = pageMap[pageId]
       if (!recordMap) {
-        throw new Error(`Error loading page "${pageId}"`)
+        // Tolerate transient failures (rate limits, timeouts) during build:
+        // skip this page in the static path list so the export doesn't die.
+        // fallback: true + ISR in pages/[pageId].tsx hydrates it on first request.
+        console.warn(
+          `skipping page "${pageId}" — recordMap missing (likely rate-limited)`
+        )
+        return map
+      }
+
+      const block = getBlockValue(recordMap.block[pageId])
+      if (
+        !(getPageProperty<boolean | null>('Public', block!, recordMap) ?? true)
+      ) {
+        return map
       }
 
       const canonicalPageId = getCanonicalPageId(pageId, recordMap, {
         uuid
-      })
+      })!
 
       if (map[canonicalPageId]) {
         // you can have multiple pages in different collections that have the same id
