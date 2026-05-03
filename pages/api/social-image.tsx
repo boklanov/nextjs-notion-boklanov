@@ -15,15 +15,22 @@ import * as libConfig from '@/lib/config'
 import interSemiBoldFont from '@/lib/fonts/inter-semibold'
 import { mapImageUrl } from '@/lib/map-image-url'
 import { notion } from '@/lib/notion-api'
+import { getR2Bytes, isR2Enabled, putR2Bytes, r2Key } from '@/lib/r2'
 import { type NotionPageInfo, type PageError } from '@/lib/types'
 
 // Edge runtime caps the function bundle at 1 MB on the Hobby plan; the
 // inter-semibold font payload alone pushes past that. Node runtime has no
 // such cap and `next/og`'s ImageResponse runs there since Next 13.3.
 
+const OG_PREFIX = process.env.R2_OG_PREFIX ?? 'cache/og/'
+// Bump to invalidate every cached card without touching the bucket.
+const OG_CACHE_VERSION = 'v1'
+const OG_CACHE_HEADER =
+  'public, max-age=0, s-maxage=86400, stale-while-revalidate=2592000'
+
 export default async function OGImage(
   req: NextApiRequest,
-  res: NextApiResponse
+  _res: NextApiResponse
 ) {
   const { searchParams } = new URL(req.url!)
   const pageId = parsePageId(
@@ -33,16 +40,36 @@ export default async function OGImage(
     return new Response('Invalid notion page id', { status: 400 })
   }
 
+  const cacheKey = r2Key(OG_PREFIX, `${OG_CACHE_VERSION}:${pageId}`, 'png')
+
+  // R2 cache hit: return cached PNG bytes and skip Notion + render entirely.
+  if (isR2Enabled) {
+    const cached = await getR2Bytes(cacheKey).catch((err: any) => {
+      console.warn('og-cache get failed', cacheKey, err?.message)
+      return null
+    })
+    if (cached) {
+      return new Response(new Uint8Array(cached), {
+        status: 200,
+        headers: {
+          'content-type': 'image/png',
+          'cache-control': OG_CACHE_HEADER,
+          'x-og-cache': 'hit'
+        }
+      })
+    }
+  }
+
   const pageInfoOrError = await getNotionPageInfo({ pageId })
   if (pageInfoOrError.type === 'error') {
-    return res.status(pageInfoOrError.error.statusCode).send({
-      error: pageInfoOrError.error.message
-    })
+    return Response.json(
+      { error: pageInfoOrError.error.message },
+      { status: pageInfoOrError.error.statusCode }
+    )
   }
   const pageInfo = pageInfoOrError.data
-  console.log(pageInfo)
 
-  return new ImageResponse(
+  const imageResponse = new ImageResponse(
     <div
       style={{
         position: 'relative',
@@ -164,6 +191,26 @@ export default async function OGImage(
       ]
     }
   )
+
+  // Buffer the rendered PNG, write through to R2, then re-emit it.
+  // ImageResponse extends Response; consuming arrayBuffer() once is fine.
+  const bytes = new Uint8Array(await imageResponse.arrayBuffer())
+
+  if (isR2Enabled) {
+    putR2Bytes(cacheKey, bytes, 'image/png').catch((err: any) => {
+      // Cache writes are best-effort; never fail the request on them.
+      console.warn('og-cache put failed', cacheKey, err?.message)
+    })
+  }
+
+  return new Response(bytes, {
+    status: 200,
+    headers: {
+      'content-type': 'image/png',
+      'cache-control': OG_CACHE_HEADER,
+      'x-og-cache': isR2Enabled ? 'miss' : 'disabled'
+    }
+  })
 }
 
 export async function getNotionPageInfo({
