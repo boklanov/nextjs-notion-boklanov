@@ -6,13 +6,6 @@ import { getSiteMap } from '@/lib/get-site-map'
 import { resolveNotionPage } from '@/lib/resolve-notion-page'
 import { type PageProps, type Params } from '@/lib/types'
 
-// `vercel.json` `functions` block is what actually sets maxDuration for
-// SSG pages on Pages Router (per Vercel docs); this export is a hint —
-// it only takes effect for API routes. 60s is the Hobby plan cap.
-export const config = {
-  maxDuration: 60
-}
-
 export const getStaticProps: GetStaticProps<PageProps, Params> = async (
   context
 ) => {
@@ -21,23 +14,12 @@ export const getStaticProps: GetStaticProps<PageProps, Params> = async (
   try {
     const props = await resolveNotionPage(domain, rawPageId)
 
-    // Long revalidate window keeps Notion request volume low. ISR still
-    // serves the cached page instantly; regeneration happens in the
-    // background and never blocks visitors.
-    return { props, revalidate: 60 }
+    return { props, revalidate: 10 }
   } catch (err) {
     console.error('page error', domain, rawPageId, err)
 
-    // Build phase: soft-fail so one bad page doesn't kill the whole export.
-    // fallback: true + getStaticPaths still lists this slug; ISR will hydrate
-    // on first request when Notion responds.
-    if (process.env.NEXT_PHASE === 'phase-production-build') {
-      return { notFound: true, revalidate: 60 }
-    }
-
-    // Runtime ISR: throw to keep serving the last-known-good cached page.
-    // Returning notFound here would commit a 404 to the cache for the
-    // revalidate window, which is what visitors saw before this fix.
+    // we don't want to publish the error version of this page, so
+    // let next.js know explicitly that incremental SSG failed
     throw err
   }
 }
