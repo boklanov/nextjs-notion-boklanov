@@ -31,5 +31,6 @@ jobs:
           REDIS_HOST: ${{ secrets.REDIS_HOST }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
 
-      - name: Build
-        run: pnpm build
+      # `pnpm build` removed from CI: hits Notion's rate limit from
+      # shared GitHub Actions IPs (429 on /api/v3/loadPageChunk).
+      # Vercel performs the real build for deploys.

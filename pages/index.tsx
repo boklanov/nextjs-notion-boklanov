@@ -11,9 +11,10 @@ export const getStaticProps = async () => {
   } catch (err) {
     console.error('page error', domain, err)
 
-    // we don't want to publish the error version of this page, so
-    // let next.js know explicitly that incremental SSG failed
-    throw err
+    // Soft-fail: matches pages/[pageId].tsx. Notion 429s during build
+    // shouldn't kill the whole deploy. ISR rebuilds the page on first
+    // request when the rate-limit window clears.
+    return { notFound: true, revalidate: 30 }
   }
 }
 
