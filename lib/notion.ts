@@ -42,27 +42,20 @@ const getNavigationLinkPages = pMemoize(
   }
 )
 
-async function getPageWithRetry(
-  pageId: string,
-  attempt = 1
-): Promise<ExtendedRecordMap> {
-  try {
-    return await notion.getPage(pageId, {
-      kyOptions: { timeout: 30_000 }
-    })
-  } catch (err: any) {
-    if (attempt >= 3) throw err
-    const delay = 500 * 2 ** (attempt - 1)
-    console.warn(
-      `notion.getPage retry ${attempt} for ${pageId}: ${err.message}`
-    )
-    await new Promise((r) => setTimeout(r, delay))
-    return getPageWithRetry(pageId, attempt + 1)
-  }
+// Resilience options for Notion API calls during build (notion-client uses ofetch).
+// 30s timeout per attempt + 2 retries with 1s base delay handles flaky
+// loadPageChunk responses without killing the whole SSG export.
+const ROBUST_FETCH_OPTIONS = {
+  timeout: 30_000,
+  retry: 3,
+  retryDelay: 2000,
+  retryStatusCodes: [408, 409, 425, 429, 500, 502, 503, 504]
 }
 
 export async function getPage(pageId: string): Promise<ExtendedRecordMap> {
-  let recordMap = await getPageWithRetry(pageId)
+  let recordMap = await notion.getPage(pageId, {
+    ofetchOptions: ROBUST_FETCH_OPTIONS
+  })
 
   if (navigationStyle !== 'default') {
     // ensure that any pages linked to in the custom navigation header have

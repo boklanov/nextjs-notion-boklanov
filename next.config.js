@@ -3,11 +3,6 @@
 
 export default {
   staticPageGenerationTimeout: 300,
-  eslint: {
-    // Allow production builds to complete even if ESLint reports errors.
-    // Upstream sync may make this unnecessary; revisit after `pnpm build` is green.
-    ignoreDuringBuilds: true
-  },
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: 'www.notion.so' },
