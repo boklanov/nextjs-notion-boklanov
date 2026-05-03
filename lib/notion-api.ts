@@ -9,6 +9,12 @@ import { NotionAPI } from 'notion-client'
 const authToken = process.env.NOTION_TOKEN_V2?.trim() || undefined
 const activeUser = process.env.NOTION_ACTIVE_USER?.trim() || undefined
 
+// One-time presence log so we can verify in build logs that the cookies
+// actually reached the runtime. Logs only the lengths, never the values.
+console.log(
+  `[notion-api] auth: token_v2=${authToken ? `present(len=${authToken.length})` : 'MISSING'}, active_user=${activeUser ? `present(len=${activeUser.length})` : 'MISSING'}`
+)
+
 export const notion = new NotionAPI({
   apiBaseUrl: process.env.NOTION_API_BASE_URL,
   authToken,
